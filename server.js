@@ -33,7 +33,6 @@ const supabase = createClient(
       autoRefreshToken: false,
       persistSession: false,
       detectSessionInUrl: false,
-      // Add admin headers for service role key
       headers: {
         'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
         'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -48,7 +47,6 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 // Test Supabase connection on startup
 async function testSupabaseConnection() {
   try {
-    // Test with a simple query that doesn't require auth
     const { data, error } = await supabase.from('_test_connection').select('*').limit(1);
     if (error) {
       console.error('❌ Supabase connection test failed:', error.message);
@@ -75,7 +73,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// In-memory store for OTPs
+// In-memory store for OTPs and OAuth states
 const otpStore = new Map();
 const OTP_EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes
 const MAX_OTP_ATTEMPTS = 3;
@@ -84,6 +82,10 @@ const MAX_OTP_ATTEMPTS = 3;
 const rateLimitStore = new Map();
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutes
 const MAX_REQUESTS_PER_WINDOW = 5;
+
+// Global OAuth states storage
+global.oauthStates = new Map();
+const OAUTH_STATE_EXPIRY = 10 * 60 * 1000; // 10 minutes
 
 // Helper functions
 function generateOTP() {
@@ -118,7 +120,6 @@ function storeOTP(email, otp, purpose = 'signin') {
 
   otpStore.set(email, otpData);
 
-  // Auto-cleanup after expiry
   setTimeout(() => {
     if (otpStore.get(email)?.otp === otp) {
       otpStore.delete(email);
@@ -156,16 +157,24 @@ function verifyOTP(email, enteredOTP, markAsUsed = false) {
     };
   }
 
-  // OTP is valid - mark as verified but don't delete immediately for password reset
   if (markAsUsed) {
     otpStore.delete(email);
   } else {
-    // For password reset flow, mark as verified but keep for the update step
     otpData.verified = true;
     otpStore.set(email, otpData);
   }
 
   return { isValid: true, purpose: otpData.purpose };
+}
+
+// Clean up expired OAuth states
+function cleanupOAuthStates() {
+  const now = Date.now();
+  for (let [state, stateData] of global.oauthStates.entries()) {
+    if (now - stateData.timestamp > OAUTH_STATE_EXPIRY) {
+      global.oauthStates.delete(state);
+    }
+  }
 }
 
 // Email template functions
@@ -460,8 +469,6 @@ function generatePasswordResetEmailTemplate(otp, isResend = false) {
   `;
 }
 
-
-
 function generatePasswordResetSuccessEmailTemplate() {
   return `
   <!DOCTYPE html>
@@ -607,7 +614,6 @@ function generatePasswordResetSuccessEmailTemplate() {
   `;
 }
 
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ 
@@ -616,198 +622,235 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     services: {
       supabase: !!process.env.SUPABASE_URL,
-      resend: !!process.env.RESEND_API_KEY
+      resend: !!process.env.RESEND_API_KEY,
+      google_oauth: !!process.env.GOOGLE_CLIENT_ID
     }
   });
 });
 
-// Enhanced health endpoint
-app.get('/api/health-detailed', async (req, res) => {
+// Google OAuth initialization endpoint
+app.post('/api/auth/google', async (req, res) => {
   try {
-    // Test Supabase
-    const { error: supabaseError } = await supabase.from('_test_connection').select('*').limit(1);
-    
-    // Test Resend
-    const { error: resendError } = await resend.domains.list();
+    const { redirectTo = `${req.headers.origin || 'https://mimaht.com'}/auth/callback` } = req.body;
 
-    const healthStatus = {
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      services: {
-        supabase: {
-          status: !supabaseError ? 'healthy' : 'unhealthy',
-          error: supabaseError?.message || null
-        },
-        resend: {
-          status: !resendError ? 'healthy' : 'unhealthy',
-          error: resendError?.message || null
-        }
-      },
-      environment: {
-        node_env: process.env.NODE_ENV,
-        port: process.env.PORT,
-        supabase_url_set: !!process.env.SUPABASE_URL,
-        supabase_key_set: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        resend_key_set: !!process.env.RESEND_API_KEY
-      }
-    };
+    console.log('🔐 Initializing Google OAuth flow...');
+    console.log('📍 Redirect URL:', redirectTo);
 
-    // If any service is unhealthy, overall status is unhealthy
-    if (supabaseError || resendError) {
-      healthStatus.status = 'unhealthy';
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res.status(500).json({
+        success: false,
+        error: 'Google OAuth not configured on server'
+      });
     }
 
-    res.status(healthStatus.status === 'healthy' ? 200 : 503).json(healthStatus);
+    // Generate state parameter for security
+    const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
     
+    // Store state
+    const stateStore = {
+      state,
+      redirectTo,
+      timestamp: Date.now()
+    };
+    
+    global.oauthStates.set(state, stateStore);
+
+    // Clean up old states
+    cleanupOAuthStates();
+
+    // Construct Google OAuth URL
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    
+    authUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set('redirect_uri', `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', 'openid email profile');
+    authUrl.searchParams.set('state', state);
+    authUrl.searchParams.set('access_type', 'offline');
+    authUrl.searchParams.set('prompt', 'consent');
+
+    console.log('✅ Google OAuth URL generated');
+
+    res.json({
+      success: true,
+      authUrl: authUrl.toString(),
+      state
+    });
+
   } catch (error) {
-    res.status(503).json({
-      status: 'unhealthy',
-      error: error.message,
-      timestamp: new Date().toISOString()
+    console.error('❌ Google OAuth initialization error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to initialize Google sign in'
     });
   }
 });
 
-// Environment test endpoint
-app.get('/api/test-env', async (req, res) => {
+// Google OAuth callback endpoint
+app.get('/api/auth/google/callback', async (req, res) => {
   try {
-    const testResults = {
-      timestamp: new Date().toISOString(),
-      environment: {
-        NODE_ENV: process.env.NODE_ENV || 'development',
-        PORT: process.env.PORT || 3001,
-        SUPABASE_URL: process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing',
-        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing',
-        RESEND_API_KEY: process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing'
-      },
-      connections: {},
-      details: {}
-    };
+    const { code, state, error: googleError } = req.query;
 
-    // Test Supabase basic connection (without auth)
-    try {
-      console.log('🔧 Testing Supabase basic connection...');
-      // Use a simple query that doesn't require auth
-      const { data, error } = await supabase.from('_test_connection').select('*').limit(1);
-      
-      testResults.connections.supabase = {
-        connected: true, // If we can reach Supabase
-        basic_connection: !error,
-        error: error?.message || null,
-        status: !error ? '✅ Connected' : '❌ Failed'
-      };
+    console.log('🔄 Handling Google OAuth callback...');
+    console.log('📦 Received parameters:', { code: code ? '✓' : '✗', state: state ? '✓' : '✗', googleError });
 
-    } catch (supabaseTestError) {
-      testResults.connections.supabase = {
-        connected: false,
-        error: supabaseTestError.message,
-        status: '❌ Failed'
-      };
+    if (googleError) {
+      console.error('❌ Google OAuth error:', googleError);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed`);
     }
 
-    // Test Supabase Admin API
-    try {
-      console.log('🔧 Testing Supabase Admin API...');
-      
-      // Use the correct admin method - listUsers and filter by email
-      const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
-      
-      if (usersError) {
-        throw new Error(usersError.message);
-      }
-      
-      testResults.details.supabaseAdmin = {
-        can_list_users: true,
-        error: null,
-        user_count: usersData?.users?.length || 0
-      };
-
-      // Test specific user lookup by filtering the users list
-      const testEmail = "yonetoussaint25@gmail.com";
-      const user = usersData.users.find(u => u.email === testEmail);
-      
-      testResults.details.userLookup = {
-        email: testEmail,
-        user_exists: !!user,
-        user_id: user?.id || null,
-        created_at: user?.created_at || null
-      };
-
-      // Test user update if user exists
-      if (user) {
-        const { error: updateError } = await supabase.auth.admin.updateUserById(
-          user.id,
-          { user_metadata: { test_timestamp: new Date().toISOString() } }
-        );
-        
-        testResults.details.userUpdateTest = {
-          can_update_user: !updateError,
-          error: updateError?.message || null
-        };
-      } else {
-        testResults.details.userUpdateTest = {
-          can_update_user: false,
-          error: 'User not found for update test'
-        };
-      }
-
-    } catch (adminError) {
-      testResults.details.supabaseAdmin = {
-        can_list_users: false,
-        error: adminError.message
-      };
-      testResults.details.userLookup = {
-        error: adminError.message
-      };
+    if (!code || !state) {
+      console.error('❌ Missing code or state parameters');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request`);
     }
 
-    // Test Resend connection (keep existing)
-    try {
-      console.log('🔧 Testing Resend connection...');
-      const { data: resendData, error: resendError } = await resend.domains.list();
-      
-      testResults.connections.resend = {
-        connected: !resendError,
-        error: resendError?.message || null,
-        status: !resendError ? '✅ Connected' : '❌ Failed'
-      };
-
-      if (!resendError) {
-        testResults.details.resend = {
-          can_list_domains: true,
-          domain_count: resendData?.data?.length || 0
-        };
-      }
-
-    } catch (resendTestError) {
-      testResults.connections.resend = {
-        connected: false,
-        error: resendTestError.message,
-        status: '❌ Failed'
-      };
+    // Verify state parameter
+    if (!global.oauthStates || !global.oauthStates.has(state)) {
+      console.error('❌ Invalid state parameter');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+session+state`);
     }
 
-    // Overall status
-    testResults.overall = {
-      status: testResults.connections.supabase.connected && testResults.connections.resend.connected ? '✅ All Systems Operational' : '⚠️ Some Issues Found',
-      supabase_ready: testResults.connections.supabase.connected,
-      resend_ready: testResults.connections.resend.connected,
-      can_reset_passwords: testResults.connections.supabase.connected && 
-                           testResults.details.userLookup?.user_exists && 
-                           testResults.details.userUpdateTest?.can_update_user
-    };
+    const stateData = global.oauthStates.get(state);
+    global.oauthStates.delete(state); // Clean up
 
-    console.log('📊 Environment test completed:', testResults.overall.status);
+    // Exchange code for tokens
+    console.log('🔄 Exchanging authorization code for tokens...');
     
-    res.json(testResults);
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('❌ Token exchange failed:', errorText);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Token+exchange+failed`);
+    }
+
+    const tokens = await tokenResponse.json();
+    console.log('✅ Tokens received successfully');
+
+    // Get user info from Google
+    const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${tokens.access_token}`,
+      },
+    });
+
+    if (!userInfoResponse.ok) {
+      console.error('❌ Failed to fetch user info from Google');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Failed+to+get+user+information`);
+    }
+
+    const userInfo = await userInfoResponse.json();
+    console.log('👤 User info received:', {
+      email: userInfo.email,
+      name: userInfo.name,
+      id: userInfo.id
+    });
+
+    // Check if user exists in Supabase
+    const { data: existingUsers, error: usersError } = await supabase.auth.admin.listUsers();
+    
+    if (usersError) {
+      console.error('❌ Error listing users:', usersError);
+      throw new Error('User lookup failed');
+    }
+
+    const existingUser = existingUsers.users.find(u => u.email === userInfo.email);
+    
+    let user;
+    let isNewUser = false;
+
+    if (existingUser) {
+      // Existing user - sign them in
+      console.log('✅ Existing user found, signing in...');
+      user = existingUser;
+      
+      // Update user metadata with latest Google info
+      const { error: updateError } = await supabase.auth.admin.updateUserById(
+        user.id,
+        {
+          user_metadata: {
+            full_name: userInfo.name,
+            avatar_url: userInfo.picture,
+            google_id: userInfo.id,
+            email_verified: true
+          }
+        }
+      );
+
+      if (updateError) {
+        console.error('⚠️ Failed to update user metadata:', updateError);
+      }
+    } else {
+      // New user - create account
+      console.log('🆕 New user, creating account...');
+      isNewUser = true;
+      
+      const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
+        email: userInfo.email,
+        password: Math.random().toString(36).slice(2) + Math.random().toString(36).toUpperCase().slice(2),
+        email_confirm: true,
+        user_metadata: {
+          full_name: userInfo.name,
+          avatar_url: userInfo.picture,
+          google_id: userInfo.id,
+          signup_method: 'google'
+        }
+      });
+
+      if (createError) {
+        console.error('❌ Error creating user:', createError);
+        throw new Error('Failed to create user account');
+      }
+
+      user = newUser;
+      console.log('✅ New user created successfully');
+    }
+
+    // Generate session for the user
+    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession({
+      user_id: user.id,
+      factors: null
+    });
+
+    if (sessionError) {
+      console.error('❌ Error creating session:', sessionError);
+      throw new Error('Failed to create user session');
+    }
+
+    console.log('✅ Session created successfully');
+
+    // Redirect to frontend with tokens and user info
+    const frontendUrl = new URL(stateData.redirectTo);
+    
+    // Add success parameters
+    frontendUrl.searchParams.set('success', 'true');
+    frontendUrl.searchParams.set('access_token', sessionData.session.access_token);
+    frontendUrl.searchParams.set('refresh_token', sessionData.session.refresh_token);
+    frontendUrl.searchParams.set('user_id', user.id);
+    frontendUrl.searchParams.set('email', userInfo.email);
+    frontendUrl.searchParams.set('full_name', userInfo.name || '');
+    frontendUrl.searchParams.set('avatar_url', userInfo.picture || '');
+    frontendUrl.searchParams.set('is_new_user', isNewUser.toString());
+
+    console.log('📍 Redirecting to:', frontendUrl.toString());
+    
+    res.redirect(frontendUrl.toString());
 
   } catch (error) {
-    console.error('Environment test error:', error);
-    res.status(500).json({ 
-      error: 'Test failed', 
-      message: error.message,
-      timestamp: new Date().toISOString()
-    });
+    console.error('💥 Google OAuth callback error:', error);
+    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Authentication+failed`);
   }
 });
 
@@ -1003,7 +1046,7 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
-// Update the complete-password-reset endpoint to send confirmation email
+// Complete password reset endpoint
 app.post('/api/complete-password-reset', async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
@@ -1218,6 +1261,7 @@ app.listen(PORT, async () => {
   console.log(`📧 Resend configured: ${!!process.env.RESEND_API_KEY}`);
   console.log(`🗄️ Supabase URL: ${process.env.SUPABASE_URL}`);
   console.log(`🔑 Service Role Key: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🔐 Google OAuth: ${process.env.GOOGLE_CLIENT_ID ? '✅ Configured' : '❌ Not configured'}`);
 
   // Test connections
   await testSupabaseConnection();
