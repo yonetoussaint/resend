@@ -686,87 +686,156 @@ authUrl.searchParams.set('prompt', 'consent');
   }
 });
 
-// Google OAuth callback endpoint
+// Google OAuth callback endpoint - FULL VERSION with debugging
 app.get('/api/auth/google/callback', async (req, res) => {
   try {
-    const { code, state, error: googleError } = req.query;
+    const { code, state, error: googleError, error_description } = req.query;
 
-    console.log('🔄 Handling Google OAuth callback...');
-    console.log('📦 Received parameters:', { code: code ? '✓' : '✗', state: state ? '✓' : '✗', googleError });
+    console.log('🔄 Google OAuth Callback - START');
+    console.log('📦 Received query parameters:', {
+      code: code ? `✓ (length: ${code.length})` : '✗',
+      state: state ? `✓ (${state})` : '✗', 
+      googleError: googleError || 'none',
+      error_description: error_description || 'none',
+      allParams: req.query
+    });
+
+    // Log the full URL for debugging
+    console.log('🌐 Full callback URL:', req.originalUrl);
 
     if (googleError) {
-      console.error('❌ Google OAuth error:', googleError);
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed`);
+      console.error('❌ Google OAuth error from Google:', {
+        error: googleError,
+        description: error_description
+      });
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed:${encodeURIComponent(googleError)}&description=${encodeURIComponent(error_description || 'No description')}`);
     }
 
     if (!code || !state) {
       console.error('❌ Missing code or state parameters');
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request`);
+      console.error('❌ Code:', code);
+      console.error('❌ State:', state);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request:+missing+code+or+state&code=${code ? 'present' : 'missing'}&state=${state ? 'present' : 'missing'}`);
     }
 
     // Verify state parameter
+    console.log('🔍 Checking OAuth state...');
+    console.log('📋 Available states in memory:', global.oauthStates ? Array.from(global.oauthStates.keys()) : 'No states stored');
+    
     if (!global.oauthStates || !global.oauthStates.has(state)) {
-      console.error('❌ Invalid state parameter');
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+session+state`);
+      console.error('❌ Invalid state parameter. Received:', state);
+      console.error('❌ Possible reasons:');
+      console.error('   - State expired (older than 10 minutes)');
+      console.error('   - Server restarted and lost memory');
+      console.error('   - State never stored properly');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+session+state:+session+expired+or+invalid`);
     }
 
     const stateData = global.oauthStates.get(state);
+    console.log('✅ State validated:', stateData);
     global.oauthStates.delete(state); // Clean up
 
     // Exchange code for tokens
     console.log('🔄 Exchanging authorization code for tokens...');
     
+    // Check if Google OAuth credentials are configured
+    console.log('🔐 Checking Google OAuth configuration...');
+    console.log('   CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ (length: ${process.env.GOOGLE_CLIENT_ID.length})` : '✗ MISSING');
+    console.log('   CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? `✓ (length: ${process.env.GOOGLE_CLIENT_SECRET.length})` : '✗ MISSING');
+    console.log('   BACKEND_URL:', process.env.BACKEND_URL || 'https://resend-u11p.onrender.com');
+    
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+      console.error('❌ Missing Google OAuth credentials');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Server+configuration+error:+missing+Google+OAuth+credentials`);
+    }
+
+    const tokenRequestBody = new URLSearchParams({
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      code: code,
+      grant_type: 'authorization_code',
+      redirect_uri: `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`,
+    });
+
+    console.log('📤 Making token request to Google...');
+    console.log('   URL: https://oauth2.googleapis.com/token');
+    console.log('   Redirect URI:', tokenRequestBody.get('redirect_uri'));
+    console.log('   Code length:', code.length);
+
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        code,
-        grant_type: 'authorization_code',
-        redirect_uri: `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`,
-      }),
+      body: tokenRequestBody,
     });
 
+    console.log('📊 Token exchange response status:', tokenResponse.status);
+    console.log('📊 Token exchange response OK:', tokenResponse.ok);
+    
+    const responseText = await tokenResponse.text();
+    console.log('📄 Token exchange response body:', responseText);
+
     if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text();
-      console.error('❌ Token exchange failed:', errorText);
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Token+exchange+failed`);
+      console.error('❌ Token exchange failed with status:', tokenResponse.status);
+      let errorMessage = `Token exchange failed: ${tokenResponse.status}`;
+      try {
+        const errorData = JSON.parse(responseText);
+        errorMessage = errorData.error_description || errorData.error || errorMessage;
+        console.error('❌ Google error details:', errorData);
+      } catch (e) {
+        console.error('❌ Could not parse error response:', e);
+      }
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=${encodeURIComponent(errorMessage)}`);
     }
 
-    const tokens = await tokenResponse.json();
-    console.log('✅ Tokens received successfully');
+    let tokens;
+    try {
+      tokens = JSON.parse(responseText);
+      console.log('✅ Tokens received successfully');
+      console.log('🔐 Token type:', tokens.token_type);
+      console.log('⏰ Expires in:', tokens.expires_in);
+      console.log('📧 Scope:', tokens.scope);
+    } catch (parseError) {
+      console.error('❌ Failed to parse token response:', parseError);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+token+response+from+Google`);
+    }
 
     // Get user info from Google
+    console.log('👤 Fetching user info from Google...');
     const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
       },
     });
 
+    console.log('📊 User info response status:', userInfoResponse.status);
+    
     if (!userInfoResponse.ok) {
-      console.error('❌ Failed to fetch user info from Google');
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Failed+to+get+user+information`);
+      const userInfoError = await userInfoResponse.text();
+      console.error('❌ Failed to fetch user info from Google:', userInfoError);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Failed+to+get+user+information+from+Google`);
     }
 
     const userInfo = await userInfoResponse.json();
-    console.log('👤 User info received:', {
+    console.log('✅ User info received:', {
       email: userInfo.email,
       name: userInfo.name,
-      id: userInfo.id
+      id: userInfo.id,
+      verified_email: userInfo.verified_email
     });
 
     // Check if user exists in Supabase
+    console.log('🔍 Checking if user exists in Supabase...');
     const { data: existingUsers, error: usersError } = await supabase.auth.admin.listUsers();
     
     if (usersError) {
       console.error('❌ Error listing users:', usersError);
-      throw new Error('User lookup failed');
+      throw new Error('User lookup failed: ' + usersError.message);
     }
 
     const existingUser = existingUsers.users.find(u => u.email === userInfo.email);
+    console.log('📋 User lookup result:', existingUser ? 'Existing user found' : 'New user');
     
     let user;
     let isNewUser = false;
@@ -791,6 +860,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
       if (updateError) {
         console.error('⚠️ Failed to update user metadata:', updateError);
+      } else {
+        console.log('✅ User metadata updated');
       }
     } else {
       // New user - create account
@@ -811,7 +882,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
       if (createError) {
         console.error('❌ Error creating user:', createError);
-        throw new Error('Failed to create user account');
+        throw new Error('Failed to create user account: ' + createError.message);
       }
 
       user = newUser;
@@ -819,6 +890,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     }
 
     // Generate session for the user
+    console.log('🔐 Creating Supabase session...');
     const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession({
       user_id: user.id,
       factors: null
@@ -826,10 +898,11 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     if (sessionError) {
       console.error('❌ Error creating session:', sessionError);
-      throw new Error('Failed to create user session');
+      throw new Error('Failed to create user session: ' + sessionError.message);
     }
 
     console.log('✅ Session created successfully');
+    console.log('👤 Session user ID:', sessionData.session.user.id);
 
     // Redirect to frontend with tokens and user info
     const frontendUrl = new URL(stateData.redirectTo);
@@ -844,13 +917,22 @@ app.get('/api/auth/google/callback', async (req, res) => {
     frontendUrl.searchParams.set('avatar_url', userInfo.picture || '');
     frontendUrl.searchParams.set('is_new_user', isNewUser.toString());
 
-    console.log('📍 Redirecting to:', frontendUrl.toString());
+    console.log('📍 Redirecting to frontend:', frontendUrl.toString());
     
     res.redirect(frontendUrl.toString());
 
   } catch (error) {
     console.error('💥 Google OAuth callback error:', error);
-    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Authentication+failed`);
+    console.error('💥 Error stack:', error.stack);
+    
+    let errorMessage = 'Authentication failed';
+    if (error.message.includes('fetch')) {
+      errorMessage = 'Network error during authentication';
+    } else if (error.message.includes('token')) {
+      errorMessage = 'Token validation failed';
+    }
+    
+    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=${encodeURIComponent(errorMessage)}&details=${encodeURIComponent(error.message)}`);
   }
 });
 
