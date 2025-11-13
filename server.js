@@ -686,6 +686,25 @@ authUrl.searchParams.set('prompt', 'consent');
   }
 });
 
+
+// Add this debug endpoint to check current OAuth states
+app.get('/api/debug/oauth-states', (req, res) => {
+  const states = global.oauthStates ? Array.from(global.oauthStates.entries()).map(([state, data]) => ({
+    state,
+    redirectTo: data.redirectTo,
+    timestamp: new Date(data.timestamp).toISOString(),
+    age: Date.now() - data.timestamp
+  })) : [];
+  
+  res.json({
+    total_states: states.length,
+    states: states,
+    memory_usage: process.memoryUsage(),
+    server_time: new Date().toISOString()
+  });
+});
+
+
 // Google OAuth callback endpoint - FULL VERSION with debugging
 app.get('/api/auth/google/callback', async (req, res) => {
   try {
