@@ -32,7 +32,13 @@ const supabase = createClient(
     auth: {
       autoRefreshToken: false,
       persistSession: false,
-    },
+      detectSessionInUrl: false,
+      // Add admin headers for service role key
+      headers: {
+        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+        'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY
+      }
+    }
   }
 );
 
@@ -42,7 +48,8 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 // Test Supabase connection on startup
 async function testSupabaseConnection() {
   try {
-    const { data, error } = await supabase.auth.getUser();
+    // Test with a simple query that doesn't require auth
+    const { data, error } = await supabase.from('_test_connection').select('*').limit(1);
     if (error) {
       console.error('❌ Supabase connection test failed:', error.message);
     } else {
@@ -453,11 +460,24 @@ function generatePasswordResetEmailTemplate(otp, isResend = false) {
   `;
 }
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    message: 'Mimaht OTP Server is running',
+    timestamp: new Date().toISOString(),
+    services: {
+      supabase: !!process.env.SUPABASE_URL,
+      resend: !!process.env.RESEND_API_KEY
+    }
+  });
+});
+
 // Enhanced health endpoint
 app.get('/api/health-detailed', async (req, res) => {
   try {
     // Test Supabase
-    const { error: supabaseError } = await supabase.auth.getUser();
+    const { error: supabaseError } = await supabase.from('_test_connection').select('*').limit(1);
     
     // Test Resend
     const { error: resendError } = await resend.domains.list();
@@ -495,6 +515,149 @@ app.get('/api/health-detailed', async (req, res) => {
     res.status(503).json({
       status: 'unhealthy',
       error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Environment test endpoint
+app.get('/api/test-env', async (req, res) => {
+  try {
+    const testResults = {
+      timestamp: new Date().toISOString(),
+      environment: {
+        NODE_ENV: process.env.NODE_ENV || 'development',
+        PORT: process.env.PORT || 3001,
+        SUPABASE_URL: process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing',
+        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing',
+        RESEND_API_KEY: process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing'
+      },
+      connections: {},
+      details: {}
+    };
+
+    // Test Supabase basic connection (without auth)
+    try {
+      console.log('🔧 Testing Supabase basic connection...');
+      // Use a simple query that doesn't require auth
+      const { data, error } = await supabase.from('_test_connection').select('*').limit(1);
+      
+      testResults.connections.supabase = {
+        connected: true, // If we can reach Supabase
+        basic_connection: !error,
+        error: error?.message || null,
+        status: !error ? '✅ Connected' : '❌ Failed'
+      };
+
+    } catch (supabaseTestError) {
+      testResults.connections.supabase = {
+        connected: false,
+        error: supabaseTestError.message,
+        status: '❌ Failed'
+      };
+    }
+
+    // Test Supabase Admin API
+    try {
+      console.log('🔧 Testing Supabase Admin API...');
+      
+      // Use the correct admin method - listUsers and filter by email
+      const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
+      
+      if (usersError) {
+        throw new Error(usersError.message);
+      }
+      
+      testResults.details.supabaseAdmin = {
+        can_list_users: true,
+        error: null,
+        user_count: usersData?.users?.length || 0
+      };
+
+      // Test specific user lookup by filtering the users list
+      const testEmail = "yonetoussaint25@gmail.com";
+      const user = usersData.users.find(u => u.email === testEmail);
+      
+      testResults.details.userLookup = {
+        email: testEmail,
+        user_exists: !!user,
+        user_id: user?.id || null,
+        created_at: user?.created_at || null
+      };
+
+      // Test user update if user exists
+      if (user) {
+        const { error: updateError } = await supabase.auth.admin.updateUserById(
+          user.id,
+          { user_metadata: { test_timestamp: new Date().toISOString() } }
+        );
+        
+        testResults.details.userUpdateTest = {
+          can_update_user: !updateError,
+          error: updateError?.message || null
+        };
+      } else {
+        testResults.details.userUpdateTest = {
+          can_update_user: false,
+          error: 'User not found for update test'
+        };
+      }
+
+    } catch (adminError) {
+      testResults.details.supabaseAdmin = {
+        can_list_users: false,
+        error: adminError.message
+      };
+      testResults.details.userLookup = {
+        error: adminError.message
+      };
+    }
+
+    // Test Resend connection (keep existing)
+    try {
+      console.log('🔧 Testing Resend connection...');
+      const { data: resendData, error: resendError } = await resend.domains.list();
+      
+      testResults.connections.resend = {
+        connected: !resendError,
+        error: resendError?.message || null,
+        status: !resendError ? '✅ Connected' : '❌ Failed'
+      };
+
+      if (!resendError) {
+        testResults.details.resend = {
+          can_list_domains: true,
+          domain_count: resendData?.data?.length || 0
+        };
+      }
+
+    } catch (resendTestError) {
+      testResults.connections.resend = {
+        connected: false,
+        error: resendTestError.message,
+        status: '❌ Failed'
+      };
+    }
+
+    // Overall status
+    testResults.overall = {
+      status: testResults.connections.supabase.connected && testResults.connections.resend.connected ? '✅ All Systems Operational' : '⚠️ Some Issues Found',
+      supabase_ready: testResults.connections.supabase.connected,
+      resend_ready: testResults.connections.resend.connected,
+      can_reset_passwords: testResults.connections.supabase.connected && 
+                           testResults.details.userLookup?.user_exists && 
+                           testResults.details.userUpdateTest?.can_update_user
+    };
+
+    console.log('📊 Environment test completed:', testResults.overall.status);
+    
+    res.json(testResults);
+
+  } catch (error) {
+    console.error('Environment test error:', error);
+    res.status(500).json({ 
+      error: 'Test failed', 
+      message: error.message,
       timestamp: new Date().toISOString()
     });
   }
@@ -567,8 +730,7 @@ app.post('/api/send-reset-otp', async (req, res) => {
       });
     }
 
-    const normalizedEmail =
- email.toLowerCase().trim();
+    const normalizedEmail = email.toLowerCase().trim();
 
     // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
@@ -693,147 +855,7 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
-
-// Add this endpoint to test all environment variables and connections
-app.get('/api/test-env', async (req, res) => {
-  try {
-    const testResults = {
-      timestamp: new Date().toISOString(),
-      environment: {
-        NODE_ENV: process.env.NODE_ENV || 'development',
-        PORT: process.env.PORT || 3001,
-        SUPABASE_URL: process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing',
-        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing',
-        RESEND_API_KEY: process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing'
-      },
-      connections: {},
-      details: {}
-    };
-
-    // Test Supabase connection
-    try {
-      console.log('🔧 Testing Supabase connection...');
-      const { data: supabaseData, error: supabaseError } = await supabase.auth.getUser();
-      
-      testResults.connections.supabase = {
-        connected: !supabaseError,
-        error: supabaseError?.message || null,
-        status: !supabaseError ? '✅ Connected' : '❌ Failed'
-      };
-
-      // Test Supabase admin API with a simple query
-      if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-        try {
-          const { data: adminData, error: adminError } = await supabase.auth.admin.listUsers();
-          testResults.details.supabaseAdmin = {
-            can_list_users: !adminError,
-            error: adminError?.message || null,
-            user_count: adminData?.users?.length || 0
-          };
-        } catch (adminTestError) {
-          testResults.details.supabaseAdmin = {
-            can_list_users: false,
-            error: adminTestError.message
-          };
-        }
-      }
-
-    } catch (supabaseTestError) {
-      testResults.connections.supabase = {
-        connected: false,
-        error: supabaseTestError.message,
-        status: '❌ Failed'
-      };
-    }
-
-    // Test Resend connection
-    try {
-      console.log('🔧 Testing Resend connection...');
-      const { data: resendData, error: resendError } = await resend.domains.list();
-      
-      testResults.connections.resend = {
-        connected: !resendError,
-        error: resendError?.message || null,
-        status: !resendError ? '✅ Connected' : '❌ Failed'
-      };
-
-      // Test if we can actually send emails
-      if (!resendError) {
-        testResults.details.resend = {
-          can_list_domains: true,
-          domain_count: resendData?.data?.length || 0
-        };
-      }
-
-    } catch (resendTestError) {
-      testResults.connections.resend = {
-        connected: false,
-        error: resendTestError.message,
-        status: '❌ Failed'
-      };
-    }
-
-    // Test specific user lookup (for debugging the password reset issue)
-    try {
-      const testEmail = "yonetoussaint25@gmail.com";
-      console.log(`🔧 Testing user lookup for: ${testEmail}`);
-      
-      const { data: userData, error: userError } = await supabase.auth.admin.getUserByEmail(testEmail);
-      
-      testResults.details.userLookup = {
-        email: testEmail,
-        user_exists: !!userData?.user,
-        user_id: userData?.user?.id || null,
-        error: userError?.message || null,
-        created_at: userData?.user?.created_at || null
-      };
-
-      // Test if we can update user (simulate password reset)
-      if (userData?.user) {
-        const { error: updateError } = await supabase.auth.admin.updateUserById(
-          userData.user.id,
-          { user_metadata: { test_timestamp: new Date().toISOString() } }
-        );
-        
-        testResults.details.userUpdateTest = {
-          can_update_user: !updateError,
-          error: updateError?.message || null
-        };
-      }
-
-    } catch (userTestError) {
-      testResults.details.userLookup = {
-        error: userTestError.message
-      };
-    }
-
-    // Overall status
-    testResults.overall = {
-      status: testResults.connections.supabase.connected && testResults.connections.resend.connected ? '✅ All Systems Operational' : '⚠️ Some Issues Found',
-      supabase_ready: testResults.connections.supabase.connected,
-      resend_ready: testResults.connections.resend.connected,
-      can_reset_passwords: testResults.connections.supabase.connected && 
-                           testResults.details.userLookup?.user_exists && 
-                           testResults.details.userUpdateTest?.can_update_user
-    };
-
-    console.log('📊 Environment test completed:', testResults.overall.status);
-    
-    res.json(testResults);
-
-  } catch (error) {
-    console.error('Environment test error:', error);
-    res.status(500).json({ 
-      error: 'Test failed', 
-      message: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-
-
-// NEW ENDPOINT: Complete password reset with OTP verification and password update
+// Complete password reset with OTP verification and password update
 app.post('/api/complete-password-reset', async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
@@ -866,30 +888,33 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
     console.log('✅ OTP verified successfully');
 
-    // Step 2: Use admin API to update password directly
+    // Step 2: Find user by listing all users and filtering by email
     try {
-      // First, get the user by email
-      const { data: userData, error: userError } = await supabase.auth.admin.getUserByEmail(normalizedEmail);
+      console.log('🔍 Looking up user by email...');
+      const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
       
-      if (userError) {
-        console.error('❌ Error getting user:', userError);
+      if (usersError) {
+        console.error('❌ Error listing users:', usersError);
         return res.status(400).json({ 
-          error: 'User not found. Please check your email address.' 
+          error: 'User lookup failed. Please try again.' 
         });
       }
 
-      if (!userData.user) {
+      // Find user by email
+      const user = usersData.users.find(u => u.email === normalizedEmail);
+      
+      if (!user) {
         console.error('❌ No user found for email:', normalizedEmail);
         return res.status(400).json({ 
           error: 'No account found with this email address.' 
         });
       }
 
-      console.log(`✅ User found: ${userData.user.id}`);
+      console.log(`✅ User found: ${user.id}`);
 
       // Update the user's password using admin API
       const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
-        userData.user.id,
+        user.id,
         { password: newPassword }
       );
 
@@ -910,8 +935,6 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
     } catch (adminError) {
       console.error('❌ Admin API error:', adminError);
-      
-      // Instead of falling back to Supabase magic link, return a clear error
       return res.status(400).json({ 
         error: 'Unable to reset password at this time. Please try the reset process again from the beginning.' 
       });
@@ -951,7 +974,7 @@ app.post('/api/resend-otp', async (req, res) => {
 
     // Choose the appropriate email template based on purpose
     let emailTemplate, subject, text;
-    
+
     if (purpose === 'password-reset') {
       emailTemplate = generatePasswordResetEmailTemplate(newOtp, true);
       subject = 'Your New Mimaht Password Reset Code';
