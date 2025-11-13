@@ -659,6 +659,146 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
+
+// Add this endpoint to test all environment variables and connections
+app.get('/api/test-env', async (req, res) => {
+  try {
+    const testResults = {
+      timestamp: new Date().toISOString(),
+      environment: {
+        NODE_ENV: process.env.NODE_ENV || 'development',
+        PORT: process.env.PORT || 3001,
+        SUPABASE_URL: process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing',
+        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing',
+        RESEND_API_KEY: process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing'
+      },
+      connections: {},
+      details: {}
+    };
+
+    // Test Supabase connection
+    try {
+      console.log('🔧 Testing Supabase connection...');
+      const { data: supabaseData, error: supabaseError } = await supabase.auth.getUser();
+      
+      testResults.connections.supabase = {
+        connected: !supabaseError,
+        error: supabaseError?.message || null,
+        status: !supabaseError ? '✅ Connected' : '❌ Failed'
+      };
+
+      // Test Supabase admin API with a simple query
+      if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        try {
+          const { data: adminData, error: adminError } = await supabase.auth.admin.listUsers();
+          testResults.details.supabaseAdmin = {
+            can_list_users: !adminError,
+            error: adminError?.message || null,
+            user_count: adminData?.users?.length || 0
+          };
+        } catch (adminTestError) {
+          testResults.details.supabaseAdmin = {
+            can_list_users: false,
+            error: adminTestError.message
+          };
+        }
+      }
+
+    } catch (supabaseTestError) {
+      testResults.connections.supabase = {
+        connected: false,
+        error: supabaseTestError.message,
+        status: '❌ Failed'
+      };
+    }
+
+    // Test Resend connection
+    try {
+      console.log('🔧 Testing Resend connection...');
+      const { data: resendData, error: resendError } = await resend.domains.list();
+      
+      testResults.connections.resend = {
+        connected: !resendError,
+        error: resendError?.message || null,
+        status: !resendError ? '✅ Connected' : '❌ Failed'
+      };
+
+      // Test if we can actually send emails
+      if (!resendError) {
+        testResults.details.resend = {
+          can_list_domains: true,
+          domain_count: resendData?.data?.length || 0
+        };
+      }
+
+    } catch (resendTestError) {
+      testResults.connections.resend = {
+        connected: false,
+        error: resendTestError.message,
+        status: '❌ Failed'
+      };
+    }
+
+    // Test specific user lookup (for debugging the password reset issue)
+    try {
+      const testEmail = "yonetoussaint25@gmail.com";
+      console.log(`🔧 Testing user lookup for: ${testEmail}`);
+      
+      const { data: userData, error: userError } = await supabase.auth.admin.getUserByEmail(testEmail);
+      
+      testResults.details.userLookup = {
+        email: testEmail,
+        user_exists: !!userData?.user,
+        user_id: userData?.user?.id || null,
+        error: userError?.message || null,
+        created_at: userData?.user?.created_at || null
+      };
+
+      // Test if we can update user (simulate password reset)
+      if (userData?.user) {
+        const { error: updateError } = await supabase.auth.admin.updateUserById(
+          userData.user.id,
+          { user_metadata: { test_timestamp: new Date().toISOString() } }
+        );
+        
+        testResults.details.userUpdateTest = {
+          can_update_user: !updateError,
+          error: updateError?.message || null
+        };
+      }
+
+    } catch (userTestError) {
+      testResults.details.userLookup = {
+        error: userTestError.message
+      };
+    }
+
+    // Overall status
+    testResults.overall = {
+      status: testResults.connections.supabase.connected && testResults.connections.resend.connected ? '✅ All Systems Operational' : '⚠️ Some Issues Found',
+      supabase_ready: testResults.connections.supabase.connected,
+      resend_ready: testResults.connections.resend.connected,
+      can_reset_passwords: testResults.connections.supabase.connected && 
+                           testResults.details.userLookup?.user_exists && 
+                           testResults.details.userUpdateTest?.can_update_user
+    };
+
+    console.log('📊 Environment test completed:', testResults.overall.status);
+    
+    res.json(testResults);
+
+  } catch (error) {
+    console.error('Environment test error:', error);
+    res.status(500).json({ 
+      error: 'Test failed', 
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+
+
 // NEW ENDPOINT: Complete password reset with OTP verification and password update
 app.post('/api/complete-password-reset', async (req, res) => {
   try {
