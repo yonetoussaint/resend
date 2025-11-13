@@ -535,7 +535,8 @@ app.post('/api/send-reset-otp', async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail =
+ email.toLowerCase().trim();
 
     // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
@@ -738,40 +739,9 @@ app.post('/api/complete-password-reset', async (req, res) => {
     } catch (adminError) {
       console.error('❌ Admin API error:', adminError);
       
-      // Fallback: Try to create a session and update password normally
-      console.log('🔄 Trying fallback method...');
-      
-      const { data: sessionData, error: sessionError } = await supabase.auth.signInWithOtp({
-        email: normalizedEmail,
-        options: {
-          shouldCreateUser: false,
-        },
-      });
-
-      if (sessionError || !sessionData.session) {
-        console.error('❌ Fallback session creation failed:', sessionError);
-        return res.status(400).json({ 
-          error: 'Failed to reset password. Please try the reset process again.' 
-        });
-      }
-
-      // Update password using the session
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: newPassword
-      });
-
-      if (updateError) {
-        console.error('❌ Fallback password update error:', updateError);
-        return res.status(400).json({ 
-          error: 'Failed to update password. Please try again.' 
-        });
-      }
-
-      console.log('✅ Password updated successfully via fallback method');
-
-      res.json({ 
-        success: true, 
-        message: 'Password reset successfully! You can now sign in with your new password.'
+      // Instead of falling back to Supabase magic link, return a clear error
+      return res.status(400).json({ 
+        error: 'Unable to reset password at this time. Please try the reset process again from the beginning.' 
       });
     }
 
