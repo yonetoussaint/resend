@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const { Resend } = require('resend');
@@ -106,7 +105,8 @@ function storeOTP(email, otp, purpose = 'signin') {
     purpose,
     attempts: 0,
     createdAt: Date.now(),
-    expiresAt: Date.now() + OTP_EXPIRY_TIME
+    expiresAt: Date.now() + OTP_EXPIRY_TIME,
+    verified: false // Track if OTP has been verified
   };
 
   otpStore.set(email, otpData);
@@ -121,7 +121,7 @@ function storeOTP(email, otp, purpose = 'signin') {
   return otpData;
 }
 
-function verifyOTP(email, enteredOTP) {
+function verifyOTP(email, enteredOTP, markAsUsed = false) {
   const otpData = otpStore.get(email);
 
   if (!otpData) {
@@ -149,10 +149,16 @@ function verifyOTP(email, enteredOTP) {
     };
   }
 
-  // OTP is valid - remove it
-  const purpose = otpData.purpose;
-  otpStore.delete(email);
-  return { isValid: true, purpose };
+  // OTP is valid - mark as verified but don't delete immediately for password reset
+  if (markAsUsed) {
+    otpStore.delete(email);
+  } else {
+    // For password reset flow, mark as verified but keep for the update step
+    otpData.verified = true;
+    otpStore.set(email, otpData);
+  }
+
+  return { isValid: true, purpose: otpData.purpose };
 }
 
 // Email template functions
@@ -591,8 +597,8 @@ app.post('/api/verify-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Verify OTP
-    const verificationResult = verifyOTP(normalizedEmail, otp);
+    // Verify OTP but don't mark as used (markAsUsed = false)
+    const verificationResult = verifyOTP(normalizedEmail, otp, false);
 
     if (!verificationResult.isValid) {
       return res.status(400).json({ 
@@ -600,9 +606,20 @@ app.post('/api/verify-otp', async (req, res) => {
       });
     }
 
-    console.log(`✅ OTP verified for ${normalizedEmail}, purpose: ${verificationResult.purpose}, creating Supabase session...`);
+    console.log(`✅ OTP verified for ${normalizedEmail}, purpose: ${verificationResult.purpose}`);
 
-    // OTP is valid - create or sign in user with Supabase
+    // For password reset, we don't create a session immediately
+    if (verificationResult.purpose === 'password-reset') {
+      console.log('🔄 Password reset OTP verified - no session created');
+      return res.json({ 
+        success: true, 
+        message: 'OTP verified successfully for password reset',
+        purpose: verificationResult.purpose
+      });
+    }
+
+    // For sign-in, create a session as before
+    console.log('🔐 Creating Supabase session for sign-in...');
     const { data, error } = await supabase.auth.signInWithOtp({
       email: normalizedEmail,
       options: {
@@ -635,6 +652,68 @@ app.post('/api/verify-otp', async (req, res) => {
 
   } catch (error) {
     console.error('Verify OTP error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error. Please try again later.' 
+    });
+  }
+});
+
+// NEW ENDPOINT: Verify OTP for password update (marks OTP as used)
+app.post('/api/verify-otp-for-password-update', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ 
+        error: 'Email and OTP are required' 
+      });
+    }
+
+    if (otp.length !== 6 || !/^\d+$/.test(otp)) {
+      return res.status(400).json({ 
+        error: 'OTP must be a 6-digit number' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Verify OTP and mark as used this time
+    const verificationResult = verifyOTP(normalizedEmail, otp, true);
+
+    if (!verificationResult.isValid) {
+      return res.status(400).json({ 
+        error: verificationResult.error 
+      });
+    }
+
+    console.log(`✅ OTP verified for password update: ${normalizedEmail}`);
+
+    // Create a session for the user so they can update their password
+    const { data, error } = await supabase.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: {
+        shouldCreateUser: false, // Don't create new user for password reset
+      },
+    });
+
+    if (error) {
+      console.error('❌ Supabase auth error during password update:', error);
+      return res.status(400).json({ 
+        error: 'Failed to create session for password update. Please try again.' 
+      });
+    }
+
+    console.log(`✅ Session created for password update: ${normalizedEmail}`);
+
+    res.json({ 
+      success: true, 
+      message: 'OTP verified successfully for password update',
+      user: data.user,
+      session: data.session
+    });
+
+  } catch (error) {
+    console.error('Verify OTP for password update error:', error);
     res.status(500).json({ 
       error: 'Internal server error. Please try again later.' 
     });
