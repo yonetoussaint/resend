@@ -20,7 +20,7 @@ app.use(cors({
     'https://mimaht.com',
     'https://www.mimaht.com',
     'http://localhost:3000',
-    'http://localhost:5173'
+    'http://localhost:5173' // Vite dev server
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -29,9 +29,94 @@ app.use(cors({
 
 app.use(express.json());
 
-// Email template functions
-function SignInOTPEmail(otp) {
-  return `
+// In-memory store for OTPs (use Redis in production)
+const otpStore = new Map();
+const OTP_EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes
+const MAX_OTP_ATTEMPTS = 3;
+
+// Rate limiting storage
+const rateLimitStore = new Map();
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutes
+const MAX_REQUESTS_PER_WINDOW = 5;
+
+// Helper functions
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function checkRateLimit(email) {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW;
+
+  let requests = rateLimitStore.get(email) || [];
+  requests = requests.filter(timestamp => timestamp > windowStart);
+
+  if (requests.length >= MAX_REQUESTS_PER_WINDOW) {
+    return false;
+  }
+
+  requests.push(now);
+  rateLimitStore.set(email, requests);
+  return true;
+}
+
+function storeOTP(email, otp) {
+  const otpData = {
+    otp,
+    attempts: 0,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + OTP_EXPIRY_TIME
+  };
+
+  otpStore.set(email, otpData);
+
+  // Auto-cleanup after expiry
+  setTimeout(() => {
+    if (otpStore.get(email)?.otp === otp) {
+      otpStore.delete(email);
+    }
+  }, OTP_EXPIRY_TIME);
+
+  return otpData;
+}
+
+function verifyOTP(email, enteredOTP) {
+  const otpData = otpStore.get(email);
+
+  if (!otpData) {
+    return { isValid: false, error: 'OTP not found or expired. Please request a new code.' };
+  }
+
+  if (Date.now() > otpData.expiresAt) {
+    otpStore.delete(email);
+    return { isValid: false, error: 'OTP has expired. Please request a new code.' };
+  }
+
+  if (otpData.attempts >= MAX_OTP_ATTEMPTS) {
+    otpStore.delete(email);
+    return { isValid: false, error: 'Too many failed attempts. Please request a new code.' };
+  }
+
+  if (otpData.otp !== enteredOTP) {
+    otpData.attempts += 1;
+    otpStore.set(email, otpData);
+
+    const remainingAttempts = MAX_OTP_ATTEMPTS - otpData.attempts;
+    return { 
+      isValid: false, 
+      error: `Invalid OTP. ${remainingAttempts} attempt(s) remaining.` 
+    };
+  }
+
+  // OTP is valid - remove it
+  otpStore.delete(email);
+  return { isValid: true };
+}
+
+// Email Template Components
+const EmailTemplates = {
+  // For initial sign-in OTP
+  signInOTP: (otp) => `
   <!DOCTYPE html>
   <html>
   <head>
@@ -151,11 +236,10 @@ function SignInOTPEmail(otp) {
       </div>
   </body>
   </html>
-  `;
-}
+  `,
 
-function ResendOTPEmail(otp) {
-  return `
+  // For resend OTP requests
+  resendOTP: (otp) => `
   <!DOCTYPE html>
   <html>
   <head>
@@ -275,11 +359,10 @@ function ResendOTPEmail(otp) {
       </div>
   </body>
   </html>
-  `;
-}
+  `,
 
-function PasswordResetOTPEmail(otp) {
-  return `
+  // For password reset OTP
+  passwordResetOTP: (otp) => `
   <!DOCTYPE html>
   <html>
   <head>
@@ -403,90 +486,8 @@ function PasswordResetOTPEmail(otp) {
       </div>
   </body>
   </html>
-  `;
-}
-
-// In-memory store for OTPs
-const otpStore = new Map();
-const OTP_EXPIRY_TIME = 10 * 60 * 1000;
-const MAX_OTP_ATTEMPTS = 3;
-
-// Rate limiting storage
-const rateLimitStore = new Map();
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000;
-const MAX_REQUESTS_PER_WINDOW = 5;
-
-// Helper functions
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-
-function checkRateLimit(email) {
-  const now = Date.now();
-  const windowStart = now - RATE_LIMIT_WINDOW;
-
-  let requests = rateLimitStore.get(email) || [];
-  requests = requests.filter(timestamp => timestamp > windowStart);
-
-  if (requests.length >= MAX_REQUESTS_PER_WINDOW) {
-    return false;
-  }
-
-  requests.push(now);
-  rateLimitStore.set(email, requests);
-  return true;
-}
-
-function storeOTP(email, otp) {
-  const otpData = {
-    otp,
-    attempts: 0,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + OTP_EXPIRY_TIME
-  };
-
-  otpStore.set(email, otpData);
-
-  setTimeout(() => {
-    if (otpStore.get(email)?.otp === otp) {
-      otpStore.delete(email);
-    }
-  }, OTP_EXPIRY_TIME);
-
-  return otpData;
-}
-
-function verifyOTP(email, enteredOTP) {
-  const otpData = otpStore.get(email);
-
-  if (!otpData) {
-    return { isValid: false, error: 'OTP not found or expired. Please request a new code.' };
-  }
-
-  if (Date.now() > otpData.expiresAt) {
-    otpStore.delete(email);
-    return { isValid: false, error: 'OTP has expired. Please request a new code.' };
-  }
-
-  if (otpData.attempts >= MAX_OTP_ATTEMPTS) {
-    otpStore.delete(email);
-    return { isValid: false, error: 'Too many failed attempts. Please request a new code.' };
-  }
-
-  if (otpData.otp !== enteredOTP) {
-    otpData.attempts += 1;
-    otpStore.set(email, otpData);
-
-    const remainingAttempts = MAX_OTP_ATTEMPTS - otpData.attempts;
-    return { 
-      isValid: false, 
-      error: `Invalid OTP. ${remainingAttempts} attempt(s) remaining.` 
-    };
-  }
-
-  otpStore.delete(email);
-  return { isValid: true };
-}
+  `
+};
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -510,20 +511,23 @@ app.post('/api/send-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
+    // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
       return res.status(429).json({ 
         error: 'Too many OTP requests. Please try again in 15 minutes.' 
       });
     }
 
+    // Generate and store OTP
     const otp = generateOTP();
     storeOTP(normalizedEmail, otp);
 
+    // Send sign-in OTP email
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: 'Mimaht <onboarding@resend.dev>',
       to: normalizedEmail,
       subject: 'Your Mimaht Sign-In Code',
-      html: SignInOTPEmail(otp),
+      html: EmailTemplates.signInOTP(otp),
       text: `Your Mimaht sign-in code is: ${otp}. This code will expire in 10 minutes.`,
     });
 
@@ -563,20 +567,23 @@ app.post('/api/send-reset-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
+    // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
       return res.status(429).json({ 
         error: 'Too many OTP requests. Please try again in 15 minutes.' 
       });
     }
 
+    // Generate and store OTP
     const otp = generateOTP();
     storeOTP(normalizedEmail, otp);
 
+    // Send password reset OTP email
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: 'Mimaht <onboarding@resend.dev>',
       to: normalizedEmail,
       subject: 'Reset Your Mimaht Password',
-      html: PasswordResetOTPEmail(otp),
+      html: EmailTemplates.passwordResetOTP(otp),
       text: `Your Mimaht password reset code is: ${otp}. This code will expire in 10 minutes. If you didn't request this reset, please ignore this email.`,
     });
 
@@ -622,6 +629,7 @@ app.post('/api/verify-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
+    // Verify OTP
     const verificationResult = verifyOTP(normalizedEmail, otp);
 
     if (!verificationResult.isValid) {
@@ -630,6 +638,7 @@ app.post('/api/verify-otp', async (req, res) => {
       });
     }
 
+    // OTP is valid - create or sign in user with Supabase
     const { data, error } = await supabase.auth.signInWithOtp({
       email: normalizedEmail,
       options: {
@@ -680,20 +689,23 @@ app.post('/api/resend-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
+    // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
       return res.status(429).json({ 
         error: 'Too many OTP requests. Please try again in 15 minutes.' 
       });
     }
 
+    // Generate new OTP
     const newOtp = generateOTP();
     storeOTP(normalizedEmail, newOtp);
 
+    // Send resend OTP email
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: 'Mimaht <onboarding@resend.dev>',
       to: normalizedEmail,
       subject: 'Your New Mimaht Verification Code',
-      html: ResendOTPEmail(newOtp),
+      html: EmailTemplates.resendOTP(newOtp),
       text: `Your new Mimaht verification code is: ${newOtp}. This code will expire in 10 minutes. Your previous code is no longer valid.`,
     });
 
