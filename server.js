@@ -1067,6 +1067,20 @@ app.post('/api/send-reset-otp', async (req, res) => {
   }
 });
 
+
+
+// Add this debug endpoint to check OAuth configuration
+app.get('/api/debug/oauth-config', (req, res) => {
+  res.json({
+    google_client_id: process.env.GOOGLE_CLIENT_ID ? '✅ Set' : '❌ Missing',
+    google_client_secret: process.env.GOOGLE_CLIENT_SECRET ? '✅ Set' : '❌ Missing',
+    backend_url: process.env.BACKEND_URL || 'https://resend-u11p.onrender.com',
+    frontend_url: process.env.FRONTEND_URL || 'https://mimaht.com',
+    supabase_url: process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing',
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
 // Verify OTP endpoint
 app.post('/api/verify-otp', async (req, res) => {
   try {
