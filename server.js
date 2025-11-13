@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const { Resend } = require('resend');
@@ -106,7 +107,7 @@ function storeOTP(email, otp, purpose = 'signin') {
     attempts: 0,
     createdAt: Date.now(),
     expiresAt: Date.now() + OTP_EXPIRY_TIME,
-    verified: false // Track if OTP has been verified
+    verified: false
   };
 
   otpStore.set(email, otpData);
@@ -658,62 +659,123 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
-// NEW ENDPOINT: Verify OTP for password update (marks OTP as used)
-app.post('/api/verify-otp-for-password-update', async (req, res) => {
+// NEW ENDPOINT: Complete password reset with OTP verification and password update
+app.post('/api/complete-password-reset', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, newPassword } = req.body;
 
-    if (!email || !otp) {
+    if (!email || !otp || !newPassword) {
       return res.status(400).json({ 
-        error: 'Email and OTP are required' 
+        error: 'Email, OTP, and new password are required' 
       });
     }
 
-    if (otp.length !== 6 || !/^\d+$/.test(otp)) {
+    if (newPassword.length < 6) {
       return res.status(400).json({ 
-        error: 'OTP must be a 6-digit number' 
+        error: 'Password must be at least 6 characters long' 
       });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Verify OTP and mark as used this time
+    console.log(`🔄 Starting complete password reset for: ${normalizedEmail}`);
+
+    // Step 1: Verify OTP and mark as used
     const verificationResult = verifyOTP(normalizedEmail, otp, true);
 
     if (!verificationResult.isValid) {
+      console.error('❌ OTP verification failed:', verificationResult.error);
       return res.status(400).json({ 
         error: verificationResult.error 
       });
     }
 
-    console.log(`✅ OTP verified for password update: ${normalizedEmail}`);
+    console.log('✅ OTP verified successfully');
 
-    // Create a session for the user so they can update their password
-    const { data, error } = await supabase.auth.signInWithOtp({
-      email: normalizedEmail,
-      options: {
-        shouldCreateUser: false, // Don't create new user for password reset
-      },
-    });
+    // Step 2: Use admin API to update password directly
+    try {
+      // First, get the user by email
+      const { data: userData, error: userError } = await supabase.auth.admin.getUserByEmail(normalizedEmail);
+      
+      if (userError) {
+        console.error('❌ Error getting user:', userError);
+        return res.status(400).json({ 
+          error: 'User not found. Please check your email address.' 
+        });
+      }
 
-    if (error) {
-      console.error('❌ Supabase auth error during password update:', error);
-      return res.status(400).json({ 
-        error: 'Failed to create session for password update. Please try again.' 
+      if (!userData.user) {
+        console.error('❌ No user found for email:', normalizedEmail);
+        return res.status(400).json({ 
+          error: 'No account found with this email address.' 
+        });
+      }
+
+      console.log(`✅ User found: ${userData.user.id}`);
+
+      // Update the user's password using admin API
+      const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
+        userData.user.id,
+        { password: newPassword }
+      );
+
+      if (updateError) {
+        console.error('❌ Password update error:', updateError);
+        return res.status(400).json({ 
+          error: 'Failed to update password. Please try again.' 
+        });
+      }
+
+      console.log('✅ Password updated successfully');
+
+      res.json({ 
+        success: true, 
+        message: 'Password reset successfully! You can now sign in with your new password.',
+        user: updateData.user
+      });
+
+    } catch (adminError) {
+      console.error('❌ Admin API error:', adminError);
+      
+      // Fallback: Try to create a session and update password normally
+      console.log('🔄 Trying fallback method...');
+      
+      const { data: sessionData, error: sessionError } = await supabase.auth.signInWithOtp({
+        email: normalizedEmail,
+        options: {
+          shouldCreateUser: false,
+        },
+      });
+
+      if (sessionError || !sessionData.session) {
+        console.error('❌ Fallback session creation failed:', sessionError);
+        return res.status(400).json({ 
+          error: 'Failed to reset password. Please try the reset process again.' 
+        });
+      }
+
+      // Update password using the session
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword
+      });
+
+      if (updateError) {
+        console.error('❌ Fallback password update error:', updateError);
+        return res.status(400).json({ 
+          error: 'Failed to update password. Please try again.' 
+        });
+      }
+
+      console.log('✅ Password updated successfully via fallback method');
+
+      res.json({ 
+        success: true, 
+        message: 'Password reset successfully! You can now sign in with your new password.'
       });
     }
 
-    console.log(`✅ Session created for password update: ${normalizedEmail}`);
-
-    res.json({ 
-      success: true, 
-      message: 'OTP verified successfully for password update',
-      user: data.user,
-      session: data.session
-    });
-
   } catch (error) {
-    console.error('Verify OTP for password update error:', error);
+    console.error('Complete password reset error:', error);
     res.status(500).json({ 
       error: 'Internal server error. Please try again later.' 
     });
