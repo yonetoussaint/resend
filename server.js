@@ -453,17 +453,51 @@ function generatePasswordResetEmailTemplate(otp, isResend = false) {
   `;
 }
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    message: 'Mimaht OTP Server is running',
-    timestamp: new Date().toISOString(),
-    services: {
-      supabase: !!process.env.SUPABASE_URL,
-      resend: !!process.env.RESEND_API_KEY
+// Enhanced health endpoint
+app.get('/api/health-detailed', async (req, res) => {
+  try {
+    // Test Supabase
+    const { error: supabaseError } = await supabase.auth.getUser();
+    
+    // Test Resend
+    const { error: resendError } = await resend.domains.list();
+
+    const healthStatus = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      services: {
+        supabase: {
+          status: !supabaseError ? 'healthy' : 'unhealthy',
+          error: supabaseError?.message || null
+        },
+        resend: {
+          status: !resendError ? 'healthy' : 'unhealthy',
+          error: resendError?.message || null
+        }
+      },
+      environment: {
+        node_env: process.env.NODE_ENV,
+        port: process.env.PORT,
+        supabase_url_set: !!process.env.SUPABASE_URL,
+        supabase_key_set: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        resend_key_set: !!process.env.RESEND_API_KEY
+      }
+    };
+
+    // If any service is unhealthy, overall status is unhealthy
+    if (supabaseError || resendError) {
+      healthStatus.status = 'unhealthy';
     }
-  });
+
+    res.status(healthStatus.status === 'healthy' ? 200 : 503).json(healthStatus);
+    
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Send OTP endpoint for sign-in
