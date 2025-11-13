@@ -705,51 +705,35 @@ app.get('/api/debug/oauth-states', (req, res) => {
 });
 
 
-// Replace the Google OAuth callback endpoint with this corrected version
+// SIMPLIFIED Google OAuth callback - Use regular Supabase client
 app.get('/api/auth/google/callback', async (req, res) => {
   try {
-    const { code, state, error: googleError, error_description } = req.query;
+    const { code, state, error: googleError } = req.query;
 
     console.log('🔄 Google OAuth Callback - START');
-    console.log('📦 Received query parameters:', {
-      code: code ? `✓ (length: ${code.length})` : '✗',
-      state: state ? `✓ (${state})` : '✗', 
-      googleError: googleError || 'none',
-      error_description: error_description || 'none'
-    });
 
     if (googleError) {
-      console.error('❌ Google OAuth error from Google:', {
-        error: googleError,
-        description: error_description
-      });
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed:${encodeURIComponent(googleError)}`);
+      console.error('❌ Google OAuth error:', googleError);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed`);
     }
 
     if (!code || !state) {
-      console.error('❌ Missing code or state parameters');
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request:+missing+code+or+state`);
+      console.error('❌ Missing code or state');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request`);
     }
 
-    // Verify state parameter
-    console.log('🔍 Checking OAuth state...');
+    // Verify state
     if (!global.oauthStates || !global.oauthStates.has(state)) {
-      console.error('❌ Invalid state parameter. Received:', state);
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+session+state:+session+expired+or+invalid`);
+      console.error('❌ Invalid state');
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+session+state`);
     }
 
     const stateData = global.oauthStates.get(state);
-    console.log('✅ State validated');
     global.oauthStates.delete(state);
 
-    // Exchange code for tokens
-    console.log('🔄 Exchanging authorization code for tokens...');
-    
-    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-      console.error('❌ Missing Google OAuth credentials');
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Server+configuration+error:+missing+Google+OAuth+credentials`);
-    }
+    console.log('✅ State validated, exchanging code for tokens...');
 
+    // Exchange code for tokens with Google
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: {
@@ -764,8 +748,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
       }),
     });
 
-    console.log('📊 Token exchange response status:', tokenResponse.status);
-    
     if (!tokenResponse.ok) {
       const errorText = await tokenResponse.text();
       console.error('❌ Token exchange failed:', errorText);
@@ -776,7 +758,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
     console.log('✅ Tokens received successfully');
 
     // Get user info from Google
-    console.log('👤 Fetching user info from Google...');
     const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
@@ -785,86 +766,79 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     if (!userInfoResponse.ok) {
       console.error('❌ Failed to fetch user info from Google');
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Failed+to+get+user+information+from+Google`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Failed+to+get+user+information`);
     }
 
     const userInfo = await userInfoResponse.json();
-    console.log('✅ User info received:', {
-      email: userInfo.email,
-      name: userInfo.name,
-      id: userInfo.id
-    });
+    console.log('✅ User info received:', userInfo.email);
 
-    // Use Supabase's built-in OAuth instead of admin API
-    console.log('🔐 Creating user session with Supabase...');
-    
-    // First, try to sign in the user with Google OAuth
-    const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
+    // Create a regular Supabase client for auth (not admin)
+    const regularSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY // Use ANON key, not service role key
+    );
+
+    // Sign in or sign up the user
+    const { data, error } = await regularSupabase.auth.signInWithIdToken({
       provider: 'google',
       token: tokens.id_token,
-      access_token: tokens.access_token,
     });
 
-    if (authError) {
-      console.error('❌ Supabase auth error:', authError);
+    if (error) {
+      console.error('❌ Supabase auth error:', error);
       
-      // If user doesn't exist, create them using signUp
-      if (authError.message.includes('user not found') || authError.message.includes('Email not confirmed')) {
-        console.log('🆕 User not found, creating new account...');
+      // If user doesn't exist, try to sign them up
+      if (error.message.includes('user not found')) {
+        console.log('🆕 User not found, creating account...');
         
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        const { data: signUpData, error: signUpError } = await regularSupabase.auth.signUp({
           email: userInfo.email,
-          password: Math.random().toString(36).slice(2) + Math.random().toString(36).toUpperCase().slice(2),
+          password: Math.random().toString(36).slice(2), // Random password for OAuth users
           options: {
             data: {
               full_name: userInfo.name,
               avatar_url: userInfo.picture,
-              google_id: userInfo.id,
-            },
-            emailRedirectTo: `${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/callback`
+            }
           }
         });
 
         if (signUpError) {
           console.error('❌ Error creating user:', signUpError);
-          throw new Error('Failed to create user account: ' + signUpError.message);
+          throw new Error('Failed to create user account');
         }
 
-        console.log('✅ New user created successfully');
+        console.log('✅ New user created, getting session...');
         
-        // For new users, we need to create a session manually
-        const { data: sessionData, error: sessionError } = await supabase.auth.signInWithPassword({
+        // Sign in the newly created user
+        const { data: sessionData, error: sessionError } = await regularSupabase.auth.signInWithPassword({
           email: userInfo.email,
-          password: signUpData.user?.id || 'default' // Use a default password for OAuth users
+          password: signUpData.user?.id || 'default'
         });
 
         if (sessionError) {
-          console.error('❌ Error creating session for new user:', sessionError);
-          throw new Error('Failed to create user session: ' + sessionError.message);
+          console.error('❌ Error creating session:', sessionError);
+          throw new Error('Failed to create user session');
         }
 
         console.log('✅ Session created for new user');
       } else {
-        throw new Error('Authentication failed: ' + authError.message);
+        throw new Error('Authentication failed: ' + error.message);
       }
-    } else {
-      console.log('✅ User authenticated successfully');
     }
 
     // Get the current session
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { session }, error: sessionError } = await regularSupabase.auth.getSession();
     
     if (sessionError || !session) {
       console.error('❌ No session found after authentication');
       throw new Error('Failed to establish user session');
     }
 
-    console.log('✅ Session verified, user ID:', session.user.id);
+    console.log('✅ Session verified, redirecting to frontend...');
 
     // Redirect to frontend with success
     const frontendUrl = new URL(stateData.redirectTo);
     
-    // Add success parameters
     frontendUrl.searchParams.set('success', 'true');
     frontendUrl.searchParams.set('access_token', session.access_token);
     frontendUrl.searchParams.set('refresh_token', session.refresh_token);
@@ -872,17 +846,15 @@ app.get('/api/auth/google/callback', async (req, res) => {
     frontendUrl.searchParams.set('email', userInfo.email);
     frontendUrl.searchParams.set('full_name', userInfo.name || '');
     frontendUrl.searchParams.set('avatar_url', userInfo.picture || '');
-    frontendUrl.searchParams.set('is_new_user', (!authData?.user).toString());
+    frontendUrl.searchParams.set('is_new_user', (!data?.user).toString());
 
-    console.log('📍 Redirecting to frontend:', frontendUrl.toString());
+    console.log('📍 Redirecting to frontend');
     
     res.redirect(frontendUrl.toString());
 
   } catch (error) {
     console.error('💥 Google OAuth callback error:', error);
-    console.error('💥 Error stack:', error.stack);
-    
-    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=${encodeURIComponent(error.message)}`);
+    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Authentication+failed`);
   }
 });
 
