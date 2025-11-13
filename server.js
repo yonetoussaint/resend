@@ -705,7 +705,7 @@ app.get('/api/debug/oauth-states', (req, res) => {
 });
 
 
-// Google OAuth callback endpoint - FULL VERSION with debugging
+// Replace the Google OAuth callback endpoint with this corrected version
 app.get('/api/auth/google/callback', async (req, res) => {
   try {
     const { code, state, error: googleError, error_description } = req.query;
@@ -715,110 +715,65 @@ app.get('/api/auth/google/callback', async (req, res) => {
       code: code ? `✓ (length: ${code.length})` : '✗',
       state: state ? `✓ (${state})` : '✗', 
       googleError: googleError || 'none',
-      error_description: error_description || 'none',
-      allParams: req.query
+      error_description: error_description || 'none'
     });
-
-    // Log the full URL for debugging
-    console.log('🌐 Full callback URL:', req.originalUrl);
 
     if (googleError) {
       console.error('❌ Google OAuth error from Google:', {
         error: googleError,
         description: error_description
       });
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed:${encodeURIComponent(googleError)}&description=${encodeURIComponent(error_description || 'No description')}`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Google+authentication+failed:${encodeURIComponent(googleError)}`);
     }
 
     if (!code || !state) {
       console.error('❌ Missing code or state parameters');
-      console.error('❌ Code:', code);
-      console.error('❌ State:', state);
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request:+missing+code+or+state&code=${code ? 'present' : 'missing'}&state=${state ? 'present' : 'missing'}`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+authentication+request:+missing+code+or+state`);
     }
 
     // Verify state parameter
     console.log('🔍 Checking OAuth state...');
-    console.log('📋 Available states in memory:', global.oauthStates ? Array.from(global.oauthStates.keys()) : 'No states stored');
-    
     if (!global.oauthStates || !global.oauthStates.has(state)) {
       console.error('❌ Invalid state parameter. Received:', state);
-      console.error('❌ Possible reasons:');
-      console.error('   - State expired (older than 10 minutes)');
-      console.error('   - Server restarted and lost memory');
-      console.error('   - State never stored properly');
       return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+session+state:+session+expired+or+invalid`);
     }
 
     const stateData = global.oauthStates.get(state);
-    console.log('✅ State validated:', stateData);
-    global.oauthStates.delete(state); // Clean up
+    console.log('✅ State validated');
+    global.oauthStates.delete(state);
 
     // Exchange code for tokens
     console.log('🔄 Exchanging authorization code for tokens...');
-    
-    // Check if Google OAuth credentials are configured
-    console.log('🔐 Checking Google OAuth configuration...');
-    console.log('   CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ (length: ${process.env.GOOGLE_CLIENT_ID.length})` : '✗ MISSING');
-    console.log('   CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? `✓ (length: ${process.env.GOOGLE_CLIENT_SECRET.length})` : '✗ MISSING');
-    console.log('   BACKEND_URL:', process.env.BACKEND_URL || 'https://resend-u11p.onrender.com');
     
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       console.error('❌ Missing Google OAuth credentials');
       return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Server+configuration+error:+missing+Google+OAuth+credentials`);
     }
 
-    const tokenRequestBody = new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET,
-      code: code,
-      grant_type: 'authorization_code',
-      redirect_uri: `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`,
-    });
-
-    console.log('📤 Making token request to Google...');
-    console.log('   URL: https://oauth2.googleapis.com/token');
-    console.log('   Redirect URI:', tokenRequestBody.get('redirect_uri'));
-    console.log('   Code length:', code.length);
-
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: tokenRequestBody,
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        code: code,
+        grant_type: 'authorization_code',
+        redirect_uri: `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`,
+      }),
     });
 
     console.log('📊 Token exchange response status:', tokenResponse.status);
-    console.log('📊 Token exchange response OK:', tokenResponse.ok);
     
-    const responseText = await tokenResponse.text();
-    console.log('📄 Token exchange response body:', responseText);
-
     if (!tokenResponse.ok) {
-      console.error('❌ Token exchange failed with status:', tokenResponse.status);
-      let errorMessage = `Token exchange failed: ${tokenResponse.status}`;
-      try {
-        const errorData = JSON.parse(responseText);
-        errorMessage = errorData.error_description || errorData.error || errorMessage;
-        console.error('❌ Google error details:', errorData);
-      } catch (e) {
-        console.error('❌ Could not parse error response:', e);
-      }
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=${encodeURIComponent(errorMessage)}`);
+      const errorText = await tokenResponse.text();
+      console.error('❌ Token exchange failed:', errorText);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Token+exchange+failed`);
     }
 
-    let tokens;
-    try {
-      tokens = JSON.parse(responseText);
-      console.log('✅ Tokens received successfully');
-      console.log('🔐 Token type:', tokens.token_type);
-      console.log('⏰ Expires in:', tokens.expires_in);
-      console.log('📧 Scope:', tokens.scope);
-    } catch (parseError) {
-      console.error('❌ Failed to parse token response:', parseError);
-      return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Invalid+token+response+from+Google`);
-    }
+    const tokens = await tokenResponse.json();
+    console.log('✅ Tokens received successfully');
 
     // Get user info from Google
     console.log('👤 Fetching user info from Google...');
@@ -828,11 +783,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
       },
     });
 
-    console.log('📊 User info response status:', userInfoResponse.status);
-    
     if (!userInfoResponse.ok) {
-      const userInfoError = await userInfoResponse.text();
-      console.error('❌ Failed to fetch user info from Google:', userInfoError);
+      console.error('❌ Failed to fetch user info from Google');
       return res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=Failed+to+get+user+information+from+Google`);
     }
 
@@ -840,101 +792,87 @@ app.get('/api/auth/google/callback', async (req, res) => {
     console.log('✅ User info received:', {
       email: userInfo.email,
       name: userInfo.name,
-      id: userInfo.id,
-      verified_email: userInfo.verified_email
+      id: userInfo.id
     });
 
-    // Check if user exists in Supabase
-    console.log('🔍 Checking if user exists in Supabase...');
-    const { data: existingUsers, error: usersError } = await supabase.auth.admin.listUsers();
+    // Use Supabase's built-in OAuth instead of admin API
+    console.log('🔐 Creating user session with Supabase...');
     
-    if (usersError) {
-      console.error('❌ Error listing users:', usersError);
-      throw new Error('User lookup failed: ' + usersError.message);
-    }
+    // First, try to sign in the user with Google OAuth
+    const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
+      provider: 'google',
+      token: tokens.id_token,
+      access_token: tokens.access_token,
+    });
 
-    const existingUser = existingUsers.users.find(u => u.email === userInfo.email);
-    console.log('📋 User lookup result:', existingUser ? 'Existing user found' : 'New user');
-    
-    let user;
-    let isNewUser = false;
-
-    if (existingUser) {
-      // Existing user - sign them in
-      console.log('✅ Existing user found, signing in...');
-      user = existingUser;
+    if (authError) {
+      console.error('❌ Supabase auth error:', authError);
       
-      // Update user metadata with latest Google info
-      const { error: updateError } = await supabase.auth.admin.updateUserById(
-        user.id,
-        {
-          user_metadata: {
-            full_name: userInfo.name,
-            avatar_url: userInfo.picture,
-            google_id: userInfo.id,
-            email_verified: true
+      // If user doesn't exist, create them using signUp
+      if (authError.message.includes('user not found') || authError.message.includes('Email not confirmed')) {
+        console.log('🆕 User not found, creating new account...');
+        
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+          email: userInfo.email,
+          password: Math.random().toString(36).slice(2) + Math.random().toString(36).toUpperCase().slice(2),
+          options: {
+            data: {
+              full_name: userInfo.name,
+              avatar_url: userInfo.picture,
+              google_id: userInfo.id,
+            },
+            emailRedirectTo: `${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/callback`
           }
-        }
-      );
+        });
 
-      if (updateError) {
-        console.error('⚠️ Failed to update user metadata:', updateError);
+        if (signUpError) {
+          console.error('❌ Error creating user:', signUpError);
+          throw new Error('Failed to create user account: ' + signUpError.message);
+        }
+
+        console.log('✅ New user created successfully');
+        
+        // For new users, we need to create a session manually
+        const { data: sessionData, error: sessionError } = await supabase.auth.signInWithPassword({
+          email: userInfo.email,
+          password: signUpData.user?.id || 'default' // Use a default password for OAuth users
+        });
+
+        if (sessionError) {
+          console.error('❌ Error creating session for new user:', sessionError);
+          throw new Error('Failed to create user session: ' + sessionError.message);
+        }
+
+        console.log('✅ Session created for new user');
       } else {
-        console.log('✅ User metadata updated');
+        throw new Error('Authentication failed: ' + authError.message);
       }
     } else {
-      // New user - create account
-      console.log('🆕 New user, creating account...');
-      isNewUser = true;
-      
-      const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
-        email: userInfo.email,
-        password: Math.random().toString(36).slice(2) + Math.random().toString(36).toUpperCase().slice(2),
-        email_confirm: true,
-        user_metadata: {
-          full_name: userInfo.name,
-          avatar_url: userInfo.picture,
-          google_id: userInfo.id,
-          signup_method: 'google'
-        }
-      });
-
-      if (createError) {
-        console.error('❌ Error creating user:', createError);
-        throw new Error('Failed to create user account: ' + createError.message);
-      }
-
-      user = newUser;
-      console.log('✅ New user created successfully');
+      console.log('✅ User authenticated successfully');
     }
 
-    // Generate session for the user
-    console.log('🔐 Creating Supabase session...');
-    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession({
-      user_id: user.id,
-      factors: null
-    });
-
-    if (sessionError) {
-      console.error('❌ Error creating session:', sessionError);
-      throw new Error('Failed to create user session: ' + sessionError.message);
+    // Get the current session
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      console.error('❌ No session found after authentication');
+      throw new Error('Failed to establish user session');
     }
 
-    console.log('✅ Session created successfully');
-    console.log('👤 Session user ID:', sessionData.session.user.id);
+    console.log('✅ Session verified, user ID:', session.user.id);
 
-    // Redirect to frontend with tokens and user info
+    // Redirect to frontend with success
     const frontendUrl = new URL(stateData.redirectTo);
     
     // Add success parameters
     frontendUrl.searchParams.set('success', 'true');
-    frontendUrl.searchParams.set('access_token', sessionData.session.access_token);
-    frontendUrl.searchParams.set('refresh_token', sessionData.session.refresh_token);
-    frontendUrl.searchParams.set('user_id', user.id);
+    frontendUrl.searchParams.set('access_token', session.access_token);
+    frontendUrl.searchParams.set('refresh_token', session.refresh_token);
+    frontendUrl.searchParams.set('user_id', session.user.id);
     frontendUrl.searchParams.set('email', userInfo.email);
     frontendUrl.searchParams.set('full_name', userInfo.name || '');
     frontendUrl.searchParams.set('avatar_url', userInfo.picture || '');
-    frontendUrl.searchParams.set('is_new_user', isNewUser.toString());
+    frontendUrl.searchParams.set('is_new_user', (!authData?.user).toString());
 
     console.log('📍 Redirecting to frontend:', frontendUrl.toString());
     
@@ -944,14 +882,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     console.error('💥 Google OAuth callback error:', error);
     console.error('💥 Error stack:', error.stack);
     
-    let errorMessage = 'Authentication failed';
-    if (error.message.includes('fetch')) {
-      errorMessage = 'Network error during authentication';
-    } else if (error.message.includes('token')) {
-      errorMessage = 'Token validation failed';
-    }
-    
-    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=${encodeURIComponent(errorMessage)}&details=${encodeURIComponent(error.message)}`);
+    res.redirect(`${process.env.FRONTEND_URL || 'https://mimaht.com'}/auth/error?message=${encodeURIComponent(error.message)}`);
   }
 });
 
