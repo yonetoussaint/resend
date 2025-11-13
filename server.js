@@ -660,14 +660,14 @@ app.post('/api/auth/google', async (req, res) => {
 
     // Construct Google OAuth URL
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    
-    authUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
-    authUrl.searchParams.set('redirect_uri', `${process.env.BACKEND_URL || 'https://resend-u11p.onrender.com'}/api/auth/google/callback`);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', 'openid email profile');
-    authUrl.searchParams.set('state', state);
-    authUrl.searchParams.set('access_type', 'offline');
-    authUrl.searchParams.set('prompt', 'consent');
+
+authUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
+authUrl.searchParams.set('redirect_uri', `${process.env.BACKEND_URL}/api/auth/google/callback`);
+authUrl.searchParams.set('response_type', 'code');
+authUrl.searchParams.set('scope', 'openid email profile');
+authUrl.searchParams.set('state', state);
+authUrl.searchParams.set('access_type', 'offline');
+authUrl.searchParams.set('prompt', 'consent');
 
     console.log('✅ Google OAuth URL generated');
 
