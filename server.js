@@ -460,6 +460,154 @@ function generatePasswordResetEmailTemplate(otp, isResend = false) {
   `;
 }
 
+
+
+function generatePasswordResetSuccessEmailTemplate() {
+  return `
+  <!DOCTYPE html>
+  <html>
+  <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Password Successfully Reset - Mimaht</title>
+      <style>
+          body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+              background-color: #f8fafc;
+              margin: 0;
+              padding: 0;
+              line-height: 1.6;
+          }
+          .container {
+              max-width: 600px;
+              margin: 0 auto;
+              background: white;
+              border-radius: 12px;
+              overflow: hidden;
+              box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+          }
+          .header {
+              background: linear-gradient(135deg, #059669, #10b981);
+              padding: 40px 20px;
+              text-align: center;
+              color: white;
+          }
+          .logo {
+              font-size: 32px;
+              font-weight: bold;
+              margin-bottom: 10px;
+          }
+          .content {
+              padding: 40px;
+          }
+          .success-icon {
+              font-size: 64px;
+              text-align: center;
+              margin: 20px 0;
+          }
+          .success-box {
+              background: #f0fdf4;
+              border: 2px solid #bbf7d0;
+              border-radius: 12px;
+              padding: 30px;
+              margin: 30px 0;
+              text-align: center;
+          }
+          .footer {
+              background: #f8fafc;
+              padding: 30px;
+              text-align: center;
+              color: #64748b;
+              font-size: 14px;
+              border-top: 1px solid #e2e8f0;
+          }
+          .warning {
+              background: #fffbeb;
+              border: 1px solid #fcd34d;
+              border-radius: 8px;
+              padding: 16px;
+              margin: 20px 0;
+              color: #92400e;
+          }
+          .info {
+              background: #eff6ff;
+              border: 1px solid #93c5fd;
+              border-radius: 8px;
+              padding: 16px;
+              margin: 20px 0;
+              color: #1e40af;
+          }
+          .purpose-badge {
+              background: #059669;
+              color: white;
+              padding: 8px 16px;
+              border-radius: 20px;
+              font-size: 14px;
+              font-weight: 600;
+              display: inline-block;
+              margin-bottom: 20px;
+          }
+          @media (max-width: 600px) {
+              .content { padding: 20px; }
+              .success-icon { font-size: 48px; }
+          }
+      </style>
+  </head>
+  <body>
+      <div class="container">
+          <div class="header">
+              <div class="logo">MIMAHT</div>
+              <h1>Password Successfully Reset</h1>
+          </div>
+          
+          <div class="content">
+              <div class="purpose-badge">✅ Password Updated</div>
+              
+              <p>Hello,</p>
+              
+              <p>Your Mimaht account password was successfully reset on <strong>${new Date().toLocaleString()}</strong>.</p>
+              
+              <div class="success-box">
+                  <div class="success-icon">🔒</div>
+                  <h2 style="color: #059669; margin-top: 0;">Password Reset Confirmed</h2>
+                  <p>You can now sign in to your Mimaht account using your new password.</p>
+              </div>
+              
+              <div class="info">
+                  <strong>📱 Next Steps:</strong>
+                  <ul>
+                      <li>Sign in to the Mimaht app with your new password</li>
+                      <li>If you use password managers, update your saved password</li>
+                      <li>Explore your account and continue shopping</li>
+                  </ul>
+              </div>
+              
+              <div class="warning">
+                  <strong>⚠️ Security Notice:</strong>
+                  <ul>
+                      <li>If you did not request this password reset, please contact our support team immediately</li>
+                      <li>Never share your password with anyone</li>
+                      <li>Use a strong, unique password for your account</li>
+                      <li>Consider enabling two-factor authentication for added security</li>
+                  </ul>
+              </div>
+              
+              <p>If you have any questions or need assistance, our support team is here to help.</p>
+              
+              <p>Stay secure!<br><strong>The Mimaht Team</strong></p>
+          </div>
+          
+          <div class="footer">
+              <p>© 2024 Mimaht. All rights reserved.</p>
+              <p>If you need help, contact us at <a href="mailto:support@mimaht.com" style="color: #059669;">support@mimaht.com</a></p>
+          </div>
+      </div>
+  </body>
+  </html>
+  `;
+}
+
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ 
@@ -855,7 +1003,7 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
-// Complete password reset with OTP verification and password update
+// Update the complete-password-reset endpoint to send confirmation email
 app.post('/api/complete-password-reset', async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
@@ -927,10 +1075,33 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
       console.log('✅ Password updated successfully');
 
+      // Step 3: Send confirmation email
+      try {
+        console.log('📧 Sending password reset confirmation email...');
+        const { data: emailData, error: emailError } = await resend.emails.send({
+          from: 'Mimaht <onboarding@resend.dev>',
+          to: normalizedEmail,
+          subject: 'Your Mimaht Password Has Been Reset',
+          html: generatePasswordResetSuccessEmailTemplate(),
+          text: `Your Mimaht account password was successfully reset on ${new Date().toLocaleString()}. If you did not request this change, please contact our support team immediately at support@mimaht.com.`,
+        });
+
+        if (emailError) {
+          console.error('❌ Confirmation email failed:', emailError);
+          // Don't fail the entire request if email fails, just log it
+        } else {
+          console.log('✅ Password reset confirmation email sent');
+        }
+      } catch (emailError) {
+        console.error('❌ Confirmation email error:', emailError);
+        // Continue with success response even if email fails
+      }
+
       res.json({ 
         success: true, 
         message: 'Password reset successfully! You can now sign in with your new password.',
-        user: updateData.user
+        user: updateData.user,
+        confirmation_email_sent: true
       });
 
     } catch (adminError) {
