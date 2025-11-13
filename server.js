@@ -1,5 +1,3 @@
-
-[file content begin]
 const express = require('express');
 const cors = require('cors');
 const { Resend } = require('resend');
