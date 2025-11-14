@@ -634,7 +634,6 @@ app.post('/api/auth/google', async (req, res) => {
     const { redirectTo = `${req.headers.origin || 'https://mimaht.com'}/auth/callback` } = req.body;
 
     console.log('🔐 Initializing Google OAuth flow...');
-    console.log('📍 Redirect URL:', redirectTo);
 
     if (!process.env.GOOGLE_CLIENT_ID) {
       return res.status(500).json({
@@ -645,29 +644,31 @@ app.post('/api/auth/google', async (req, res) => {
 
     // Generate state parameter for security
     const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-    
+
     // Store state
     const stateStore = {
       state,
       redirectTo,
       timestamp: Date.now()
     };
-    
-    global.oauthStates.set(state, stateStore);
 
-    // Clean up old states
+    global.oauthStates.set(state, stateStore);
     cleanupOAuthStates();
 
-    // Construct Google OAuth URL
+    // Construct Google OAuth URL with app name hint
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
 
-authUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
-authUrl.searchParams.set('redirect_uri', `${process.env.BACKEND_URL}/api/auth/google/callback`);
-authUrl.searchParams.set('response_type', 'code');
-authUrl.searchParams.set('scope', 'openid email profile');
-authUrl.searchParams.set('state', state);
-authUrl.searchParams.set('access_type', 'offline');
-authUrl.searchParams.set('prompt', 'consent');
+    authUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set('redirect_uri', `${process.env.BACKEND_URL}/api/auth/google/callback`);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', 'openid email profile');
+    authUrl.searchParams.set('state', state);
+    authUrl.searchParams.set('access_type', 'offline');
+    authUrl.searchParams.set('prompt', 'consent');
+    
+    // Add these parameters to improve the OAuth experience
+    authUrl.searchParams.set('include_granted_scopes', 'true');
+    authUrl.searchParams.set('login_hint', ''); // You can pre-fill email if available
 
     console.log('✅ Google OAuth URL generated');
 
