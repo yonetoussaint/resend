@@ -665,7 +665,7 @@ app.post('/api/auth/google', async (req, res) => {
     authUrl.searchParams.set('state', state);
     authUrl.searchParams.set('access_type', 'offline');
     authUrl.searchParams.set('prompt', 'consent');
-    
+
     // Add these parameters to improve the OAuth experience
     authUrl.searchParams.set('include_granted_scopes', 'true');
     authUrl.searchParams.set('login_hint', ''); // You can pre-fill email if available
@@ -687,7 +687,6 @@ app.post('/api/auth/google', async (req, res) => {
   }
 });
 
-
 // Add this debug endpoint to check current OAuth states
 app.get('/api/debug/oauth-states', (req, res) => {
   const states = global.oauthStates ? Array.from(global.oauthStates.entries()).map(([state, data]) => ({
@@ -696,7 +695,7 @@ app.get('/api/debug/oauth-states', (req, res) => {
     timestamp: new Date(data.timestamp).toISOString(),
     age: Date.now() - data.timestamp
   })) : [];
-  
+
   res.json({
     total_states: states.length,
     states: states,
@@ -704,7 +703,6 @@ app.get('/api/debug/oauth-states', (req, res) => {
     server_time: new Date().toISOString()
   });
 });
-
 
 // Google OAuth callback - with better branding
 app.get('/api/auth/google/callback', async (req, res) => {
@@ -861,29 +859,79 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 // Send OTP endpoint for sign-in
 app.post('/api/send-otp', async (req, res) => {
+  console.log('=== 🚀 OTP REQUEST START ===');
+  console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+  console.log('📧 Email parameter:', req.body.email);
+  console.log('🕒 Timestamp:', new Date().toISOString());
+
   try {
     const { email } = req.body;
 
     if (!email || !email.includes('@')) {
+      console.log('❌ No email provided or invalid format');
       return res.status(400).json({ 
         error: 'Valid email address is required' 
       });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
+    console.log('✅ Email normalized:', normalizedEmail);
 
-    // Check rate limit
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      console.log('❌ Invalid email format:', normalizedEmail);
+      return res.status(400).json({
+        error: 'Invalid email format'
+      });
+    }
+    console.log('✅ Email format validation passed');
+
+    console.log('🔍 Checking rate limit for:', normalizedEmail);
     if (!checkRateLimit(normalizedEmail)) {
+      console.log('🚫 Rate limit exceeded for:', normalizedEmail);
       return res.status(429).json({ 
         error: 'Too many OTP requests. Please try again in 15 minutes.' 
       });
     }
+    console.log('✅ Rate limit check passed');
 
-    // Generate and store OTP for sign-in
+    console.log('🔍 Checking database for email:', normalizedEmail);
+    const { data: user, error: dbError } = await supabase
+      .from('users')
+      .select('id, email, created_at')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (dbError) {
+      console.log('❌ Database query error:', dbError.message);
+      console.log('❌ Database error details:', JSON.stringify(dbError, null, 2));
+      
+      if (dbError.code === 'PGRST116') {
+        console.log('ℹ️  User not found in database, but continuing with OTP send');
+      } else {
+        console.log('⚠️  Database error, but continuing with OTP send');
+      }
+    } else {
+      console.log('✅ User found in database:', {
+        id: user.id,
+        email: user.email,
+        created_at: user.created_at
+      });
+    }
+
+    console.log('🔑 Generating OTP...');
     const otp = generateOTP();
+    console.log('🔑 Generated OTP:', otp);
+    
+    console.log('💾 Storing OTP in memory...');
     storeOTP(normalizedEmail, otp, 'signin');
+    console.log('✅ OTP stored successfully in memory');
 
-    // Send email using Resend
+    console.log('🔄 Calling Resend API...');
+    console.log('📤 Resend from address: Mimaht <onboarding@resend.dev>');
+    console.log('📨 Resend to address:', normalizedEmail);
+    console.log('📧 Email subject: Your Mimaht Sign-In Verification Code');
+
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: 'Mimaht <onboarding@resend.dev>',
       to: normalizedEmail,
@@ -893,13 +941,38 @@ app.post('/api/send-otp', async (req, res) => {
     });
 
     if (emailError) {
-      console.error('Resend error:', emailError);
+      console.error('❌ RESEND API ERROR DETAILS:');
+      console.error('❌ Error name:', emailError.name);
+      console.error('❌ Error message:', emailError.message);
+      console.error('❌ Error code:', emailError.statusCode);
+      console.error('❌ Full error object:', JSON.stringify(emailError, null, 2));
+
+      if (emailError.message?.includes('rate limit')) {
+        console.log('🚫 Rate limit hit for Resend');
+        return res.status(429).json({
+          error: 'Too many attempts. Please try again in a few minutes.'
+        });
+      }
+
+      if (emailError.message?.includes('not authorized') || emailError.message?.includes('authorization')) {
+        console.log('🔐 Resend authorization error - check domain verification');
+        return res.status(500).json({
+          error: 'Email service configuration error. Please contact support.'
+        });
+      }
+
       return res.status(500).json({ 
-        error: 'Failed to send verification email. Please try again.' 
+        error: 'Failed to send verification email. Please try again.',
+        internalError: emailError.message
       });
     }
 
+    console.log('✅ RESEND API SUCCESS:');
+    console.log('✅ Resend response:', JSON.stringify(emailData, null, 2));
+    console.log('✅ Email ID:', emailData?.id);
+    console.log('✅ Email sent successfully via Resend');
     console.log(`✅ Sign-in OTP ${otp} sent to ${normalizedEmail}`);
+    console.log('=== ✅ OTP REQUEST COMPLETED SUCCESSFULLY ===');
 
     res.json({ 
       success: true, 
@@ -908,9 +981,16 @@ app.post('/api/send-otp', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Send OTP error:', error);
+    console.error('💥 UNEXPECTED ERROR IN OTP ENDPOINT:');
+    console.error('💥 Error name:', error.name);
+    console.error('💥 Error message:', error.message);
+    console.error('💥 Error stack:', error.stack);
+    console.error('💥 Full error:', JSON.stringify(error, null, 2));
+    console.log('=== ❌ OTP REQUEST FAILED ===');
+
     res.status(500).json({ 
-      error: 'Internal server error. Please try again later.' 
+      error: 'Internal server error. Please try again later.',
+      internalError: error.message
     });
   }
 });
@@ -928,18 +1008,15 @@ app.post('/api/send-reset-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
       return res.status(429).json({ 
         error: 'Too many OTP requests. Please try again in 15 minutes.' 
       });
     }
 
-    // Generate and store OTP for password reset
     const otp = generateOTP();
     storeOTP(normalizedEmail, otp, 'password-reset');
 
-    // Send password reset email using Resend
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: 'Mimaht <onboarding@resend.dev>',
       to: normalizedEmail,
@@ -971,100 +1048,6 @@ app.post('/api/send-reset-otp', async (req, res) => {
   }
 });
 
-
-
-// Add this debug endpoint to check OAuth configuration
-app.get('/api/debug/oauth-config', (req, res) => {
-  res.json({
-    google_client_id: process.env.GOOGLE_CLIENT_ID ? '✅ Set' : '❌ Missing',
-    google_client_secret: process.env.GOOGLE_CLIENT_SECRET ? '✅ Set' : '❌ Missing',
-    backend_url: process.env.BACKEND_URL || 'https://resend-u11p.onrender.com',
-    frontend_url: process.env.FRONTEND_URL || 'https://mimaht.com',
-    supabase_url: process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing',
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-// Verify OTP endpoint
-app.post('/api/verify-otp', async (req, res) => {
-  try {
-    const { email, otp } = req.body;
-
-    if (!email || !otp) {
-      return res.status(400).json({ 
-        error: 'Email and OTP are required' 
-      });
-    }
-
-    if (otp.length !== 6 || !/^\d+$/.test(otp)) {
-      return res.status(400).json({ 
-        error: 'OTP must be a 6-digit number' 
-      });
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
-
-    // Verify OTP but don't mark as used (markAsUsed = false)
-    const verificationResult = verifyOTP(normalizedEmail, otp, false);
-
-    if (!verificationResult.isValid) {
-      return res.status(400).json({ 
-        error: verificationResult.error 
-      });
-    }
-
-    console.log(`✅ OTP verified for ${normalizedEmail}, purpose: ${verificationResult.purpose}`);
-
-    // For password reset, we don't create a session immediately
-    if (verificationResult.purpose === 'password-reset') {
-      console.log('🔄 Password reset OTP verified - no session created');
-      return res.json({ 
-        success: true, 
-        message: 'OTP verified successfully for password reset',
-        purpose: verificationResult.purpose
-      });
-    }
-
-    // For sign-in, create a session as before
-    console.log('🔐 Creating Supabase session for sign-in...');
-    const { data, error } = await supabase.auth.signInWithOtp({
-      email: normalizedEmail,
-      options: {
-        shouldCreateUser: true,
-      },
-    });
-
-    if (error) {
-      console.error('❌ Supabase auth error:', error);
-
-      let errorMessage = 'Authentication failed. Please try again.';
-      if (error.message.includes('rate limit')) {
-        errorMessage = 'Too many attempts. Please try again later.';
-      } else if (error.message.includes('already registered')) {
-        errorMessage = 'An account with this email already exists.';
-      }
-
-      return res.status(400).json({ error: errorMessage });
-    }
-
-    console.log(`✅ User authenticated: ${normalizedEmail}`);
-
-    res.json({ 
-      success: true, 
-      message: 'Successfully verified and signed in',
-      purpose: verificationResult.purpose,
-      user: data.user,
-      session: data.session
-    });
-
-  } catch (error) {
-    console.error('Verify OTP error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error. Please try again later.' 
-    });
-  }
-});
-
 // Complete password reset endpoint
 app.post('/api/complete-password-reset', async (req, res) => {
   try {
@@ -1086,7 +1069,6 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
     console.log(`🔄 Starting complete password reset for: ${normalizedEmail}`);
 
-    // Step 1: Verify OTP and mark as used
     const verificationResult = verifyOTP(normalizedEmail, otp, true);
 
     if (!verificationResult.isValid) {
@@ -1098,11 +1080,10 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
     console.log('✅ OTP verified successfully');
 
-    // Step 2: Find user by listing all users and filtering by email
     try {
       console.log('🔍 Looking up user by email...');
       const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
-      
+
       if (usersError) {
         console.error('❌ Error listing users:', usersError);
         return res.status(400).json({ 
@@ -1110,9 +1091,8 @@ app.post('/api/complete-password-reset', async (req, res) => {
         });
       }
 
-      // Find user by email
       const user = usersData.users.find(u => u.email === normalizedEmail);
-      
+
       if (!user) {
         console.error('❌ No user found for email:', normalizedEmail);
         return res.status(400).json({ 
@@ -1122,7 +1102,6 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
       console.log(`✅ User found: ${user.id}`);
 
-      // Update the user's password using admin API
       const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
         user.id,
         { password: newPassword }
@@ -1137,7 +1116,6 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
       console.log('✅ Password updated successfully');
 
-      // Step 3: Send confirmation email
       try {
         console.log('📧 Sending password reset confirmation email...');
         const { data: emailData, error: emailError } = await resend.emails.send({
@@ -1150,13 +1128,11 @@ app.post('/api/complete-password-reset', async (req, res) => {
 
         if (emailError) {
           console.error('❌ Confirmation email failed:', emailError);
-          // Don't fail the entire request if email fails, just log it
         } else {
           console.log('✅ Password reset confirmation email sent');
         }
       } catch (emailError) {
         console.error('❌ Confirmation email error:', emailError);
-        // Continue with success response even if email fails
       }
 
       res.json({ 
@@ -1194,18 +1170,15 @@ app.post('/api/resend-otp', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Check rate limit
     if (!checkRateLimit(normalizedEmail)) {
       return res.status(429).json({ 
         error: 'Too many OTP requests. Please try again in 15 minutes.' 
       });
     }
 
-    // Generate new OTP
     const newOtp = generateOTP();
     storeOTP(normalizedEmail, newOtp, purpose);
 
-    // Choose the appropriate email template based on purpose
     let emailTemplate, subject, text;
 
     if (purpose === 'password-reset') {
@@ -1218,7 +1191,6 @@ app.post('/api/resend-otp', async (req, res) => {
       text = `Your new Mimaht verification code is: ${newOtp}. This code will expire in 10 minutes. Your previous code is no longer valid.`;
     }
 
-    // Send new OTP email
     const { data: emailData, error: emailError } = await resend.emails.send({
       from: 'Mimaht <onboarding@resend.dev>',
       to: normalizedEmail,
@@ -1282,7 +1254,6 @@ app.listen(PORT, async () => {
   console.log(`🔑 Service Role Key: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing'}`);
   console.log(`🔐 Google OAuth: ${process.env.GOOGLE_CLIENT_ID ? '✅ Configured' : '❌ Not configured'}`);
 
-  // Test connections
   await testSupabaseConnection();
 });
 
