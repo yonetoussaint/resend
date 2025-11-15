@@ -928,12 +928,12 @@ app.post('/api/send-otp', async (req, res) => {
     console.log('✅ OTP stored successfully in memory');
 
     console.log('🔄 Calling Resend API...');
-    console.log('📤 Resend from address: Mimaht <onboarding@resend.dev>');
+    console.log('📤 Resend from address: Mimaht <noreply@mimaht.com>');
     console.log('📨 Resend to address:', normalizedEmail);
     console.log('📧 Email subject: Your Mimaht Sign-In Verification Code');
 
     const { data: emailData, error: emailError } = await resend.emails.send({
-      from: 'Mimaht <onboarding@resend.dev>',
+      from: 'Mimaht <noreply@mimaht.com>',
       to: normalizedEmail,
       subject: 'Your Mimaht Sign-In Verification Code',
       html: generateSignInEmailTemplate(otp),
@@ -1018,7 +1018,7 @@ app.post('/api/send-reset-otp', async (req, res) => {
     storeOTP(normalizedEmail, otp, 'password-reset');
 
     const { data: emailData, error: emailError } = await resend.emails.send({
-      from: 'Mimaht <onboarding@resend.dev>',
+      from: 'Mimaht <noreply@mimaht.com>',
       to: normalizedEmail,
       subject: 'Your Mimaht Password Reset Code',
       html: generatePasswordResetEmailTemplate(otp),
@@ -1119,7 +1119,7 @@ app.post('/api/complete-password-reset', async (req, res) => {
       try {
         console.log('📧 Sending password reset confirmation email...');
         const { data: emailData, error: emailError } = await resend.emails.send({
-          from: 'Mimaht <onboarding@resend.dev>',
+          from: 'Mimaht <noreply@mimaht.com>',
           to: normalizedEmail,
           subject: 'Your Mimaht Password Has Been Reset',
           html: generatePasswordResetSuccessEmailTemplate(),
@@ -1192,7 +1192,7 @@ app.post('/api/resend-otp', async (req, res) => {
     }
 
     const { data: emailData, error: emailError } = await resend.emails.send({
-      from: 'Mimaht <onboarding@resend.dev>',
+      from: 'Mimaht <noreply@mimaht.com>',
       to: normalizedEmail,
       subject: subject,
       html: emailTemplate,
