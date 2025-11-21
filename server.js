@@ -1048,6 +1048,72 @@ app.post('/api/send-reset-otp', async (req, res) => {
   }
 });
 
+
+
+// Verify OTP endpoint
+app.post('/api/verify-otp', async (req, res) => {
+  console.log('=== 🔍 OTP VERIFICATION REQUEST START ===');
+  console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+  console.log('📧 Email:', req.body.email);
+  console.log('🔑 OTP:', req.body.otp ? `${req.body.otp.substring(0, 2)}****` : 'missing');
+  console.log('🕒 Timestamp:', new Date().toISOString());
+
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      console.log('❌ Missing email or OTP');
+      return res.status(400).json({ 
+        error: 'Email and OTP are required' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log('✅ Email normalized:', normalizedEmail);
+
+    if (!otp.match(/^\d{6}$/)) {
+      console.log('❌ Invalid OTP format');
+      return res.status(400).json({ 
+        error: 'OTP must be a 6-digit number' 
+      });
+    }
+
+    console.log('🔍 Verifying OTP in memory store...');
+    const verificationResult = verifyOTP(normalizedEmail, otp, false);
+
+    if (!verificationResult.isValid) {
+      console.log('❌ OTP verification failed:', verificationResult.error);
+      return res.status(400).json({ 
+        error: verificationResult.error 
+      });
+    }
+
+    console.log('✅ OTP verified successfully');
+    console.log('🎯 OTP purpose:', verificationResult.purpose);
+    console.log('=== ✅ OTP VERIFICATION COMPLETED SUCCESSFULLY ===');
+
+    res.json({ 
+      success: true, 
+      message: 'OTP verified successfully',
+      purpose: verificationResult.purpose
+    });
+
+  } catch (error) {
+    console.error('💥 UNEXPECTED ERROR IN OTP VERIFICATION:');
+    console.error('💥 Error name:', error.name);
+    console.error('💥 Error message:', error.message);
+    console.error('💥 Error stack:', error.stack);
+    console.log('=== ❌ OTP VERIFICATION FAILED ===');
+
+    res.status(500).json({ 
+      error: 'Internal server error. Please try again later.',
+      internalError: error.message
+    });
+  }
+});
+
+
+
 // Complete password reset endpoint
 app.post('/api/complete-password-reset', async (req, res) => {
   try {
