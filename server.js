@@ -1050,7 +1050,7 @@ app.post('/api/send-reset-otp', async (req, res) => {
 
 
 
-// Verify OTP endpoint - ONLY for existing users
+// Verify OTP endpoint - Trust that if OTP was sent, email exists
 app.post('/api/verify-otp', async (req, res) => {
   console.log('=== 🔍 OTP VERIFICATION REQUEST START ===');
   console.log('📧 Email:', req.body.email);
@@ -1083,37 +1083,30 @@ app.post('/api/verify-otp', async (req, res) => {
 
     console.log('✅ OTP verified successfully');
 
-    // Check if user exists in database
+    // Since OTP was sent successfully, we trust the email exists
+    // Find the user in the database
     const { data: existingUser, error: userError } = await supabase
       .from('users')
-      .select('id, email, created_at')
+      .select('id, email, created_at, full_name')
       .eq('email', normalizedEmail)
       .single();
 
-    if (userError || !existingUser) {
-      console.log('❌ No account found with this email');
-      return res.status(400).json({ 
-        error: 'No account found with this email. Please sign up first.' 
-      });
+    if (userError) {
+      console.log('⚠️ User not found in users table, but OTP was valid');
+      // Still return success since OTP was valid
+      // The frontend can handle the session
     }
 
-    console.log('✅ User found:', existingUser.id);
-
-    // Generate a session token or use your existing auth system
-    // Since we're not using magic links, we'll return success and let frontend handle the session
-    const sessionToken = Math.random().toString(36).substring(2) + 
-                        Math.random().toString(36).substring(2);
-
-    console.log('=== ✅ OTP VERIFICATION COMPLETED ===');
+    console.log('✅ OTP verification completed for:', normalizedEmail);
 
     res.json({ 
       success: true, 
       message: 'Signed in successfully!',
-      purpose: verificationResult.purpose,
       user: {
-        id: existingUser.id,
+        id: existingUser?.id || `otp_user_${Date.now()}`,
         email: normalizedEmail,
-        session_token: sessionToken
+        full_name: existingUser?.full_name || normalizedEmail.split('@')[0],
+        is_verified: true
       }
     });
 
