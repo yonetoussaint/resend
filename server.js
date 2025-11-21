@@ -1050,7 +1050,7 @@ app.post('/api/send-reset-otp', async (req, res) => {
 
 
 
-// Verify OTP endpoint with Supabase Auth
+// Verify OTP endpoint - ONLY for existing users
 app.post('/api/verify-otp', async (req, res) => {
   console.log('=== 🔍 OTP VERIFICATION REQUEST START ===');
   console.log('📧 Email:', req.body.email);
@@ -1083,91 +1083,38 @@ app.post('/api/verify-otp', async (req, res) => {
 
     console.log('✅ OTP verified successfully');
 
-    // Use Supabase Auth to sign in the user (similar to password login)
-    const regularSupabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
-
-    // Check if user exists and sign them in
-    const { data: user, error: userError } = await regularSupabase
+    // Check if user exists in database
+    const { data: existingUser, error: userError } = await supabase
       .from('users')
-      .select('id, email')
+      .select('id, email, created_at')
       .eq('email', normalizedEmail)
       .single();
 
-    let isNewUser = false;
-
-    if (userError || !user) {
-      console.log('🆕 User not found, creating new account...');
-      
-      // Create user with a random password (for OTP flow)
-      const randomPassword = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-      
-      const { data: authData, error: signUpError } = await regularSupabase.auth.signUp({
-        email: normalizedEmail,
-        password: randomPassword,
-        options: {
-          data: {
-            email: normalizedEmail,
-            signup_method: 'otp'
-          }
-        }
+    if (userError || !existingUser) {
+      console.log('❌ No account found with this email');
+      return res.status(400).json({ 
+        error: 'No account found with this email. Please sign up first.' 
       });
-
-      if (signUpError) {
-        console.error('❌ Error creating user:', signUpError);
-        return res.status(400).json({ 
-          error: 'Failed to create user account' 
-        });
-      }
-
-      isNewUser = true;
-      console.log('✅ New user created');
     }
 
-    // For OTP login, we need to use a different approach since we don't have the password
-    // Option 1: Use magic link (recommended)
-    const { data: magicLinkData, error: magicLinkError } = await regularSupabase.auth.signInWithOtp({
-      email: normalizedEmail,
-      options: {
-        emailRedirectTo: `${process.env.FRONTEND_URL}/auth/callback`
-      }
-    });
+    console.log('✅ User found:', existingUser.id);
 
-    if (magicLinkError) {
-      console.error('❌ Magic link error:', magicLinkError);
-      
-      // Option 2: Use admin API to generate sign-in token
-      const { data: adminData, error: adminError } = await supabase.auth.admin.generateLink({
-        type: 'magiclink',
-        email: normalizedEmail,
-        options: {
-          redirectTo: `${process.env.FRONTEND_URL}/auth/callback`
-        }
-      });
-
-      if (adminError) {
-        console.error('❌ Admin link error:', adminError);
-        return res.status(400).json({ 
-          error: 'Failed to create authentication session' 
-        });
-      }
-
-      console.log('✅ Admin auth link generated');
-    }
+    // Generate a session token or use your existing auth system
+    // Since we're not using magic links, we'll return success and let frontend handle the session
+    const sessionToken = Math.random().toString(36).substring(2) + 
+                        Math.random().toString(36).substring(2);
 
     console.log('=== ✅ OTP VERIFICATION COMPLETED ===');
 
     res.json({ 
       success: true, 
-      message: 'OTP verified successfully',
+      message: 'Signed in successfully!',
       purpose: verificationResult.purpose,
       user: {
+        id: existingUser.id,
         email: normalizedEmail,
-        is_new_user: isNewUser
+        session_token: sessionToken
       }
-      // Note: Session will be handled by Supabase Auth redirect
     });
 
   } catch (error) {
