@@ -1050,64 +1050,130 @@ app.post('/api/send-reset-otp', async (req, res) => {
 
 
 
-// Verify OTP endpoint
+// Verify OTP endpoint with Supabase Auth
 app.post('/api/verify-otp', async (req, res) => {
   console.log('=== 🔍 OTP VERIFICATION REQUEST START ===');
-  console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
   console.log('📧 Email:', req.body.email);
-  console.log('🔑 OTP:', req.body.otp ? `${req.body.otp.substring(0, 2)}****` : 'missing');
-  console.log('🕒 Timestamp:', new Date().toISOString());
 
   try {
     const { email, otp } = req.body;
 
     if (!email || !otp) {
-      console.log('❌ Missing email or OTP');
       return res.status(400).json({ 
         error: 'Email and OTP are required' 
       });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    console.log('✅ Email normalized:', normalizedEmail);
 
     if (!otp.match(/^\d{6}$/)) {
-      console.log('❌ Invalid OTP format');
       return res.status(400).json({ 
         error: 'OTP must be a 6-digit number' 
       });
     }
 
-    console.log('🔍 Verifying OTP in memory store...');
-    const verificationResult = verifyOTP(normalizedEmail, otp, false);
+    // Verify OTP
+    const verificationResult = verifyOTP(normalizedEmail, otp, true);
 
     if (!verificationResult.isValid) {
-      console.log('❌ OTP verification failed:', verificationResult.error);
       return res.status(400).json({ 
         error: verificationResult.error 
       });
     }
 
     console.log('✅ OTP verified successfully');
-    console.log('🎯 OTP purpose:', verificationResult.purpose);
-    console.log('=== ✅ OTP VERIFICATION COMPLETED SUCCESSFULLY ===');
+
+    // Use Supabase Auth to sign in the user (similar to password login)
+    const regularSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY
+    );
+
+    // Check if user exists and sign them in
+    const { data: user, error: userError } = await regularSupabase
+      .from('users')
+      .select('id, email')
+      .eq('email', normalizedEmail)
+      .single();
+
+    let isNewUser = false;
+
+    if (userError || !user) {
+      console.log('🆕 User not found, creating new account...');
+      
+      // Create user with a random password (for OTP flow)
+      const randomPassword = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      
+      const { data: authData, error: signUpError } = await regularSupabase.auth.signUp({
+        email: normalizedEmail,
+        password: randomPassword,
+        options: {
+          data: {
+            email: normalizedEmail,
+            signup_method: 'otp'
+          }
+        }
+      });
+
+      if (signUpError) {
+        console.error('❌ Error creating user:', signUpError);
+        return res.status(400).json({ 
+          error: 'Failed to create user account' 
+        });
+      }
+
+      isNewUser = true;
+      console.log('✅ New user created');
+    }
+
+    // For OTP login, we need to use a different approach since we don't have the password
+    // Option 1: Use magic link (recommended)
+    const { data: magicLinkData, error: magicLinkError } = await regularSupabase.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: {
+        emailRedirectTo: `${process.env.FRONTEND_URL}/auth/callback`
+      }
+    });
+
+    if (magicLinkError) {
+      console.error('❌ Magic link error:', magicLinkError);
+      
+      // Option 2: Use admin API to generate sign-in token
+      const { data: adminData, error: adminError } = await supabase.auth.admin.generateLink({
+        type: 'magiclink',
+        email: normalizedEmail,
+        options: {
+          redirectTo: `${process.env.FRONTEND_URL}/auth/callback`
+        }
+      });
+
+      if (adminError) {
+        console.error('❌ Admin link error:', adminError);
+        return res.status(400).json({ 
+          error: 'Failed to create authentication session' 
+        });
+      }
+
+      console.log('✅ Admin auth link generated');
+    }
+
+    console.log('=== ✅ OTP VERIFICATION COMPLETED ===');
 
     res.json({ 
       success: true, 
       message: 'OTP verified successfully',
-      purpose: verificationResult.purpose
+      purpose: verificationResult.purpose,
+      user: {
+        email: normalizedEmail,
+        is_new_user: isNewUser
+      }
+      // Note: Session will be handled by Supabase Auth redirect
     });
 
   } catch (error) {
-    console.error('💥 UNEXPECTED ERROR IN OTP VERIFICATION:');
-    console.error('💥 Error name:', error.name);
-    console.error('💥 Error message:', error.message);
-    console.error('💥 Error stack:', error.stack);
-    console.log('=== ❌ OTP VERIFICATION FAILED ===');
-
+    console.error('💥 OTP VERIFICATION ERROR:', error);
     res.status(500).json({ 
-      error: 'Internal server error. Please try again later.',
-      internalError: error.message
+      error: 'Internal server error. Please try again later.'
     });
   }
 });
