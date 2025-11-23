@@ -16,6 +16,11 @@ if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
   process.exit(1);
 }
 
+if (!process.env.SUPABASE_ANON_KEY) {
+  console.error('❌ SUPABASE_ANON_KEY is required for Google OAuth');
+  process.exit(1);
+}
+
 if (!process.env.RESEND_API_KEY) {
   console.error('❌ RESEND_API_KEY is required');
   process.exit(1);
@@ -34,6 +39,23 @@ if (!process.env.TWILIO_AUTH_TOKEN) {
 if (!process.env.TWILIO_PHONE_NUMBER) {
   console.error('❌ TWILIO_PHONE_NUMBER is required');
   process.exit(1);
+}
+
+// Validate Google OAuth environment variables (warn but don't exit)
+if (!process.env.GOOGLE_CLIENT_ID) {
+  console.warn('⚠️  GOOGLE_CLIENT_ID not set - Google OAuth will be disabled');
+}
+
+if (!process.env.GOOGLE_CLIENT_SECRET) {
+  console.warn('⚠️  GOOGLE_CLIENT_SECRET not set - Google OAuth will be disabled');
+}
+
+if (!process.env.BACKEND_URL) {
+  console.warn('⚠️  BACKEND_URL not set - Google OAuth callbacks may not work properly');
+}
+
+if (!process.env.FRONTEND_URL) {
+  console.warn('⚠️  FRONTEND_URL not set - Google OAuth redirects may not work properly');
 }
 
 // Middleware
@@ -85,6 +107,11 @@ app.listen(PORT, () => {
   console.log(`📧 Resend configured: ${!!process.env.RESEND_API_KEY}`);
   console.log(`📞 Twilio configured: ${!!process.env.TWILIO_ACCOUNT_SID}`);
   console.log(`🗄️ Supabase URL: ${process.env.SUPABASE_URL}`);
+  console.log(`🔐 Service Role Key: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🔑 Anon Key: ${process.env.SUPABASE_ANON_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🔐 Google OAuth: ${process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET ? '✅ Configured' : '❌ Not configured'}`);
+  console.log(`🌐 Backend URL: ${process.env.BACKEND_URL || '❌ Not set'}`);
+  console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || '❌ Not set'}`);
 });
 
 module.exports = app;
