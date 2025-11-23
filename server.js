@@ -433,10 +433,10 @@ app.post('/api/send-phone-otp', async (req, res) => {
   }
 });
 
-// Verify Phone OTP endpoint
+// Verify Phone OTP endpoint - FIXED VERSION
 app.post('/api/verify-phone-otp', async (req, res) => {
   console.log('=== 📱 PHONE OTP VERIFICATION REQUEST START ===');
-  
+
   try {
     const { phoneNumber, otp } = req.body;
 
@@ -471,10 +471,10 @@ app.post('/api/verify-phone-otp', async (req, res) => {
 
     console.log('✅ Phone OTP verified successfully');
 
-    // Check if user exists with this phone number
+    // ✅ FIXED: Check if user exists with this phone number in PROFILES table
     const { data: existingUser, error: userError } = await supabase
-      .from('users')
-      .select('id, email, phone, full_name')
+      .from('profiles')  // ← Correct table
+      .select('id, email, phone, full_name, username')
       .eq('phone', formattedNumber)
       .single();
 
@@ -485,7 +485,7 @@ app.post('/api/verify-phone-otp', async (req, res) => {
         id: existingUser?.id || `phone_${Date.now()}`,
         phone: formattedNumber,
         email: existingUser?.email,
-        full_name: existingUser?.full_name || 'User',
+        full_name: existingUser?.full_name || existingUser?.username || 'User',
         is_verified: true
       }
     });
