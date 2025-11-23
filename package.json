@@ -12,7 +12,8 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "resend": "^2.0.0",
-    "@supabase/supabase-js": "^2.38.0"
+    "@supabase/supabase-js": "^2.38.0",
+    "twilio": "^4.19.0"
   },
   "engines": {
     "node": ">=18.0.0"
