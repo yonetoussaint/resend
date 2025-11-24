@@ -559,7 +559,70 @@ router.post('/resend-otp', async (req, res) => {
 
 
 
-// Complete Password Reset endpoint - FIXED VERSION
+// Verify Password Reset OTP endpoint - FIXED VERSION
+router.post('/verify-reset-otp', async (req, res) => {
+  console.log('=== 🔐 PASSWORD RESET OTP VERIFICATION START ===');
+  console.log('Request body:', req.body);
+
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      console.log('❌ Missing email or OTP');
+      return res.status(400).json({ 
+        error: 'Email and OTP are required' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (!otp.match(/^\d{6}$/)) {
+      console.log('❌ Invalid OTP format:', otp);
+      return res.status(400).json({ 
+        error: 'OTP must be a 6-digit number' 
+      });
+    }
+
+    console.log('📝 Checking OTP store for:', normalizedEmail);
+    const otpData = otpStore.get(normalizedEmail);
+    console.log('📝 Stored OTP data:', otpData);
+    console.log('📝 Current OTP store contents:', Array.from(otpStore.entries()));
+
+    // DON'T DELETE THE OTP YET - pass false to keep it
+    const verificationResult = verifyOTP(normalizedEmail, otp, false);
+
+    if (!verificationResult.isValid) {
+      console.log('❌ OTP verification failed:', verificationResult.error);
+      return res.status(400).json({ 
+        error: verificationResult.error 
+      });
+    }
+
+    // Check if this is a password reset OTP
+    if (verificationResult.purpose !== 'password_reset') {
+      console.log('❌ Wrong OTP purpose:', verificationResult.purpose);
+      return res.status(400).json({ 
+        error: 'This OTP is not valid for password reset' 
+      });
+    }
+
+    console.log('✅ Password reset OTP verified successfully (OTP preserved for next step)');
+
+    res.json({ 
+      success: true, 
+      message: 'Password reset code verified successfully',
+      verified: true
+    });
+
+  } catch (error) {
+    console.error('💥 PASSWORD RESET OTP VERIFICATION ERROR:', error);
+    res.status(500).json({ 
+      error: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Complete Password Reset endpoint - UPDATED VERSION
 router.post('/complete-password-reset', async (req, res) => {
   console.log('=== 🔐 COMPLETE PASSWORD RESET START ===');
   console.log('Request body:', { 
@@ -601,29 +664,52 @@ router.post('/complete-password-reset', async (req, res) => {
     const otpData = otpStore.get(normalizedEmail);
     console.log('📝 Stored OTP data:', otpData);
 
-    // Verify OTP first
-    const verificationResult = verifyOTP(normalizedEmail, otp, true);
-
-    if (!verificationResult.isValid) {
-      console.log('❌ OTP verification failed:', verificationResult.error);
+    // Check if OTP exists and is verified
+    if (!otpData) {
+      console.log('❌ OTP not found or expired');
       return res.status(400).json({ 
-        error: verificationResult.error 
+        error: 'Invalid or expired verification code. Please request a new one.' 
+      });
+    }
+
+    // Check if OTP was previously verified
+    if (!otpData.verified) {
+      console.log('❌ OTP not verified yet');
+      return res.status(400).json({ 
+        error: 'Please verify your OTP code first' 
+      });
+    }
+
+    // Verify the OTP matches
+    if (otpData.otp !== otp) {
+      console.log('❌ OTP mismatch');
+      return res.status(400).json({ 
+        error: 'Invalid verification code' 
       });
     }
 
     // Check if this is a password reset OTP
-    if (verificationResult.purpose !== 'password_reset') {
-      console.log('❌ Wrong OTP purpose:', verificationResult.purpose);
+    if (otpData.purpose !== 'password_reset') {
+      console.log('❌ Wrong OTP purpose:', otpData.purpose);
       return res.status(400).json({ 
         error: 'This OTP is not valid for password reset' 
       });
     }
 
-    console.log('✅ OTP verified, proceeding with password reset');
+    // Check if OTP has expired
+    if (Date.now() > otpData.expiresAt) {
+      otpStore.delete(normalizedEmail);
+      console.log('❌ OTP expired');
+      return res.status(400).json({ 
+        error: 'Verification code has expired. Please request a new one.' 
+      });
+    }
 
-    // FIXED: Use the GoTrue Admin API directly with service role key
+    console.log('✅ OTP validated, proceeding with password reset');
+
+    // Get user using admin API
     const { data: userData, error: userError } = await supabase.auth.admin.listUsers();
-    
+
     if (userError) {
       console.error('❌ Error listing users:', userError);
       return res.status(500).json({ 
@@ -633,9 +719,11 @@ router.post('/complete-password-reset', async (req, res) => {
 
     // Find user by email
     const user = userData.users.find(u => u.email === normalizedEmail);
-    
+
     if (!user) {
       console.log('❌ User not found:', normalizedEmail);
+      // Delete the OTP since user doesn't exist
+      otpStore.delete(normalizedEmail);
       return res.status(404).json({ 
         error: 'User not found. Please check your email address.' 
       });
@@ -651,18 +739,21 @@ router.post('/complete-password-reset', async (req, res) => {
 
     if (updateError) {
       console.error('❌ Failed to update password in Supabase:', updateError);
-      
+
       // Provide more specific error messages
       if (updateError.message.includes('password')) {
         return res.status(400).json({ 
           error: 'Password does not meet security requirements. Please choose a stronger password.' 
         });
       }
-      
+
       return res.status(500).json({ 
         error: 'Failed to update password. Please try again.' 
       });
     }
+
+    // SUCCESS - Now delete the OTP
+    otpStore.delete(normalizedEmail);
 
     console.log('✅ Password reset completed successfully for:', normalizedEmail);
     console.log('📝 Update result:', { userId: updateData.user.id, email: updateData.user.email });
