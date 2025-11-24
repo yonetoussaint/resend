@@ -488,4 +488,59 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
+
+
+
+// Verify Password Reset OTP endpoint
+router.post('/verify-reset-otp', async (req, res) => {
+  console.log('=== 🔐 PASSWORD RESET OTP VERIFICATION START ===');
+
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ 
+        error: 'Email and OTP are required' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (!otp.match(/^\d{6}$/)) {
+      return res.status(400).json({ 
+        error: 'OTP must be a 6-digit number' 
+      });
+    }
+
+    const verificationResult = verifyOTP(normalizedEmail, otp, true);
+
+    if (!verificationResult.isValid) {
+      return res.status(400).json({ 
+        error: verificationResult.error 
+      });
+    }
+
+    // Check if this is a password reset OTP
+    if (verificationResult.purpose !== 'password_reset') {
+      return res.status(400).json({ 
+        error: 'This OTP is not valid for password reset' 
+      });
+    }
+
+    console.log('✅ Password reset OTP verified successfully');
+
+    res.json({ 
+      success: true, 
+      message: 'Password reset code verified successfully',
+      verified: true
+    });
+
+  } catch (error) {
+    console.error('💥 PASSWORD RESET OTP VERIFICATION ERROR:', error);
+    res.status(500).json({ 
+      error: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
 module.exports = router;
