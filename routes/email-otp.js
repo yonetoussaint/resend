@@ -559,7 +559,7 @@ router.post('/resend-otp', async (req, res) => {
 
 
 
-// Complete Password Reset endpoint
+// Complete Password Reset endpoint - FIXED VERSION
 router.post('/complete-password-reset', async (req, res) => {
   console.log('=== 🔐 COMPLETE PASSWORD RESET START ===');
   console.log('Request body:', { 
@@ -621,34 +621,51 @@ router.post('/complete-password-reset', async (req, res) => {
 
     console.log('✅ OTP verified, proceeding with password reset');
 
-    // Update password in Supabase
-    const { data: userData, error: userError } = await supabase
-      .from('profiles')
-      .select('id, email')
-      .eq('email', normalizedEmail)
-      .single();
+    // FIXED: Use the GoTrue Admin API directly with service role key
+    const { data: userData, error: userError } = await supabase.auth.admin.listUsers();
+    
+    if (userError) {
+      console.error('❌ Error listing users:', userError);
+      return res.status(500).json({ 
+        error: 'Failed to access user database. Please try again.' 
+      });
+    }
 
-    if (userError || !userData) {
+    // Find user by email
+    const user = userData.users.find(u => u.email === normalizedEmail);
+    
+    if (!user) {
       console.log('❌ User not found:', normalizedEmail);
       return res.status(404).json({ 
         error: 'User not found. Please check your email address.' 
       });
     }
 
-    // Update user password in Supabase Auth
-    const { error: updateError } = await supabase.auth.admin.updateUserById(
-      userData.id,
+    console.log('👤 Found user for password reset:', user.id);
+
+    // Update user password using admin API
+    const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
+      user.id,
       { password: newPassword }
     );
 
     if (updateError) {
       console.error('❌ Failed to update password in Supabase:', updateError);
+      
+      // Provide more specific error messages
+      if (updateError.message.includes('password')) {
+        return res.status(400).json({ 
+          error: 'Password does not meet security requirements. Please choose a stronger password.' 
+        });
+      }
+      
       return res.status(500).json({ 
         error: 'Failed to update password. Please try again.' 
       });
     }
 
     console.log('✅ Password reset completed successfully for:', normalizedEmail);
+    console.log('📝 Update result:', { userId: updateData.user.id, email: updateData.user.email });
 
     res.json({ 
       success: true, 
