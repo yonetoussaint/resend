@@ -680,4 +680,49 @@ router.post('/complete-password-reset', async (req, res) => {
   }
 });
 
+
+
+
+// Add this to your backend routes
+router.get('/test', (req, res) => {
+  console.log('✅ Test endpoint hit');
+  res.json({ 
+    status: 'OK', 
+    message: 'Backend is running',
+    timestamp: new Date().toISOString(),
+    environment: {
+      hasSupabaseUrl: !!process.env.SUPABASE_URL,
+      hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY
+    }
+  });
+});
+
+router.post('/test-auth', async (req, res) => {
+  try {
+    console.log('🔄 Testing Supabase auth connection...');
+    const { data, error } = await supabase.auth.admin.listUsers();
+    
+    if (error) {
+      console.error('❌ Supabase auth test failed:', error);
+      return res.status(500).json({ 
+        success: false,
+        error: error.message 
+      });
+    }
+    
+    console.log('✅ Supabase auth test successful');
+    res.json({ 
+      success: true,
+      message: 'Supabase auth is working',
+      userCount: data.users.length
+    });
+  } catch (error) {
+    console.error('❌ Supabase auth test exception:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
 module.exports = router;
