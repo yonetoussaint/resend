@@ -556,4 +556,111 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
+
+
+
+// Complete Password Reset endpoint
+router.post('/complete-password-reset', async (req, res) => {
+  console.log('=== 🔐 COMPLETE PASSWORD RESET START ===');
+  console.log('Request body:', { 
+    email: req.body.email, 
+    hasOtp: !!req.body.otp,
+    hasNewPassword: !!req.body.newPassword 
+  });
+
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    // Validate required fields
+    if (!email || !otp || !newPassword) {
+      console.log('❌ Missing required fields');
+      return res.status(400).json({ 
+        error: 'Email, OTP, and new password are required' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Validate OTP format
+    if (!otp.match(/^\d{6}$/)) {
+      console.log('❌ Invalid OTP format:', otp);
+      return res.status(400).json({ 
+        error: 'OTP must be a 6-digit number' 
+      });
+    }
+
+    // Validate password length
+    if (newPassword.length < 6) {
+      console.log('❌ Password too short');
+      return res.status(400).json({ 
+        error: 'Password must be at least 6 characters long' 
+      });
+    }
+
+    console.log('📝 Checking OTP store for:', normalizedEmail);
+    const otpData = otpStore.get(normalizedEmail);
+    console.log('📝 Stored OTP data:', otpData);
+
+    // Verify OTP first
+    const verificationResult = verifyOTP(normalizedEmail, otp, true);
+
+    if (!verificationResult.isValid) {
+      console.log('❌ OTP verification failed:', verificationResult.error);
+      return res.status(400).json({ 
+        error: verificationResult.error 
+      });
+    }
+
+    // Check if this is a password reset OTP
+    if (verificationResult.purpose !== 'password_reset') {
+      console.log('❌ Wrong OTP purpose:', verificationResult.purpose);
+      return res.status(400).json({ 
+        error: 'This OTP is not valid for password reset' 
+      });
+    }
+
+    console.log('✅ OTP verified, proceeding with password reset');
+
+    // Update password in Supabase
+    const { data: userData, error: userError } = await supabase
+      .from('profiles')
+      .select('id, email')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (userError || !userData) {
+      console.log('❌ User not found:', normalizedEmail);
+      return res.status(404).json({ 
+        error: 'User not found. Please check your email address.' 
+      });
+    }
+
+    // Update user password in Supabase Auth
+    const { error: updateError } = await supabase.auth.admin.updateUserById(
+      userData.id,
+      { password: newPassword }
+    );
+
+    if (updateError) {
+      console.error('❌ Failed to update password in Supabase:', updateError);
+      return res.status(500).json({ 
+        error: 'Failed to update password. Please try again.' 
+      });
+    }
+
+    console.log('✅ Password reset completed successfully for:', normalizedEmail);
+
+    res.json({ 
+      success: true, 
+      message: 'Password has been reset successfully. You can now sign in with your new password.'
+    });
+
+  } catch (error) {
+    console.error('💥 COMPLETE PASSWORD RESET ERROR:', error);
+    res.status(500).json({ 
+      error: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
 module.exports = router;
