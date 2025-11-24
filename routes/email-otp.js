@@ -236,6 +236,149 @@ router.post('/send-otp', async (req, res) => {
   }
 });
 
+
+// Send Password Reset OTP endpoint
+router.post('/send-reset-otp', async (req, res) => {
+  console.log('=== 🔐 PASSWORD RESET OTP REQUEST START ===');
+
+  try {
+    const { email } = req.body;
+
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ 
+        error: 'Valid email address is required' 
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      return res.status(400).json({
+        error: 'Invalid email format'
+      });
+    }
+
+    // Check if user exists in Supabase
+    const { data: existingUser, error: userError } = await supabase
+      .from('profiles')
+      .select('id, email')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (userError || !existingUser) {
+      console.log('User not found for password reset:', normalizedEmail);
+      // For security, don't reveal if user exists or not
+      return res.json({ 
+        success: true, 
+        message: 'If an account exists with this email, a password reset code has been sent.'
+      });
+    }
+
+    if (!checkRateLimit(`${normalizedEmail}_reset`)) {
+      return res.status(429).json({ 
+        error: 'Too many password reset requests. Please try again in 15 minutes.' 
+      });
+    }
+
+    const otp = generateOTP();
+    storeOTP(normalizedEmail, otp, 'password_reset');
+
+    // Generate password reset email template
+    const resetEmailHtml = generatePasswordResetEmailTemplate(otp);
+
+    const { data: emailData, error: emailError } = await resend.emails.send({
+      from: 'Mimaht <noreply@mimaht.com>',
+      to: normalizedEmail,
+      subject: 'Reset Your Mimaht Password',
+      html: resetEmailHtml,
+      text: `Your Mimaht password reset code is: ${otp}. This code will expire in 10 minutes.`,
+    });
+
+    if (emailError) {
+      console.error('Resend error for password reset:', emailError);
+      return res.status(500).json({ 
+        error: 'Failed to send password reset email. Please try again.'
+      });
+    }
+
+    console.log(`✅ Password reset OTP ${otp} sent to ${normalizedEmail}`);
+
+    res.json({ 
+      success: true, 
+      message: 'Password reset code sent successfully',
+      emailId: emailData?.id 
+    });
+
+  } catch (error) {
+    console.error('💥 UNEXPECTED ERROR IN PASSWORD RESET ENDPOINT:', error);
+    res.status(500).json({ 
+      error: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Password Reset Email Template Function
+function generatePasswordResetEmailTemplate(otp) {
+  return `
+  <!DOCTYPE html>
+  <html>
+  <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Reset Your Mimaht Password</title>
+      <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; background-color: #f8fafc; margin: 0; padding: 0; line-height: 1.6; }
+          .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+          .header { background: linear-gradient(135deg, #dc2626, #ef4444); padding: 40px 20px; text-align: center; color: white; }
+          .logo { font-size: 32px; font-weight: bold; margin-bottom: 10px; }
+          .content { padding: 40px; }
+          .otp-code { font-size: 48px; font-weight: bold; text-align: center; letter-spacing: 12px; margin: 40px 0; color: #dc2626; background: #fef2f2; padding: 30px; border-radius: 12px; border: 2px dashed #fecaca; font-family: 'Courier New', monospace; }
+          .footer { background: #f8fafc; padding: 30px; text-align: center; color: #64748b; font-size: 14px; border-top: 1px solid #e2e8f0; }
+          .warning { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; margin: 20px 0; color: #92400e; }
+          .info { background: #eff6ff; border: 1px solid #93c5fd; border-radius: 8px; padding: 16px; margin: 20px 0; color: #1e40af; }
+          .purpose-badge { background: #dc2626; color: white; padding: 8px 16px; border-radius: 20px; font-size: 14px; font-weight: 600; display: inline-block; margin-bottom: 20px; }
+          @media (max-width: 600px) { .content { padding: 20px; } .otp-code { font-size: 36px; letter-spacing: 8px; padding: 20px; } }
+      </style>
+  </head>
+  <body>
+      <div class="container">
+          <div class="header">
+              <div class="logo">MIMAHT</div>
+              <h1>Reset Your Password</h1>
+          </div>
+          <div class="content">
+              <div class="purpose-badge">🔒 Password Reset</div>
+              <p>Hello,</p>
+              <p>We received a request to reset your Mimaht account password. Use the verification code below to proceed:</p>
+              <div class="otp-code">${otp}</div>
+              <div class="info">
+                  <strong>📱 Enter this code in the Mimaht app:</strong>
+                  <p>Return to the Mimaht app and enter the 6-digit code above to reset your password.</p>
+              </div>
+              <div class="warning">
+                  <strong>⚠️ Security Notice:</strong>
+                  <ul>
+                      <li>This code will expire in <strong>10 minutes</strong></li>
+                      <li>Never share this code with anyone</li>
+                      <li>Mimaht will never ask for your verification code</li>
+                      <li>If you didn't request this password reset, please ignore this email</li>
+                  </ul>
+              </div>
+              <p>If you have any questions or need assistance, please contact our support team.</p>
+              <p>Best regards,<br><strong>The Mimaht Team</strong></p>
+          </div>
+          <div class="footer">
+              <p>© 2024 Mimaht. All rights reserved.</p>
+              <p>If you need help, contact us at <a href="mailto:support@mimaht.com" style="color: #dc2626;">support@mimaht.com</a></p>
+          </div>
+      </div>
+  </body>
+  </html>
+  `;
+}
+
+
 // Verify Email OTP endpoint
 router.post('/verify-otp', async (req, res) => {
   console.log('=== 🔍 EMAIL OTP VERIFICATION START ===');
