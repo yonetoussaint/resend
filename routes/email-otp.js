@@ -57,7 +57,7 @@ function checkRateLimit(identifier) {
 
 function storeOTP(email, otp, purpose = 'signin') {
   console.log(`📝 Storing OTP: ${otp} for ${email} with purpose: ${purpose}`);
-  
+
   const otpData = {
     otp,
     purpose,
@@ -441,7 +441,7 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// Verify Password Reset OTP endpoint
+// Verify Password Reset OTP endpoint - FIXED VERSION
 router.post('/verify-reset-otp', async (req, res) => {
   console.log('=== 🔐 PASSWORD RESET OTP VERIFICATION START ===');
   console.log('Request body:', req.body);
@@ -470,7 +470,8 @@ router.post('/verify-reset-otp', async (req, res) => {
     console.log('📝 Stored OTP data:', otpData);
     console.log('📝 Current OTP store contents:', Array.from(otpStore.entries()));
 
-    const verificationResult = verifyOTP(normalizedEmail, otp, true);
+    // DON'T DELETE THE OTP YET - pass false to keep it
+    const verificationResult = verifyOTP(normalizedEmail, otp, false);
 
     if (!verificationResult.isValid) {
       console.log('❌ OTP verification failed:', verificationResult.error);
@@ -487,7 +488,7 @@ router.post('/verify-reset-otp', async (req, res) => {
       });
     }
 
-    console.log('✅ Password reset OTP verified successfully');
+    console.log('✅ Password reset OTP verified successfully (OTP preserved for next step)');
 
     res.json({ 
       success: true, 
@@ -556,73 +557,7 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
-
-
-
-// Verify Password Reset OTP endpoint - FIXED VERSION
-router.post('/verify-reset-otp', async (req, res) => {
-  console.log('=== 🔐 PASSWORD RESET OTP VERIFICATION START ===');
-  console.log('Request body:', req.body);
-
-  try {
-    const { email, otp } = req.body;
-
-    if (!email || !otp) {
-      console.log('❌ Missing email or OTP');
-      return res.status(400).json({ 
-        error: 'Email and OTP are required' 
-      });
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
-
-    if (!otp.match(/^\d{6}$/)) {
-      console.log('❌ Invalid OTP format:', otp);
-      return res.status(400).json({ 
-        error: 'OTP must be a 6-digit number' 
-      });
-    }
-
-    console.log('📝 Checking OTP store for:', normalizedEmail);
-    const otpData = otpStore.get(normalizedEmail);
-    console.log('📝 Stored OTP data:', otpData);
-    console.log('📝 Current OTP store contents:', Array.from(otpStore.entries()));
-
-    // DON'T DELETE THE OTP YET - pass false to keep it
-    const verificationResult = verifyOTP(normalizedEmail, otp, false);
-
-    if (!verificationResult.isValid) {
-      console.log('❌ OTP verification failed:', verificationResult.error);
-      return res.status(400).json({ 
-        error: verificationResult.error 
-      });
-    }
-
-    // Check if this is a password reset OTP
-    if (verificationResult.purpose !== 'password_reset') {
-      console.log('❌ Wrong OTP purpose:', verificationResult.purpose);
-      return res.status(400).json({ 
-        error: 'This OTP is not valid for password reset' 
-      });
-    }
-
-    console.log('✅ Password reset OTP verified successfully (OTP preserved for next step)');
-
-    res.json({ 
-      success: true, 
-      message: 'Password reset code verified successfully',
-      verified: true
-    });
-
-  } catch (error) {
-    console.error('💥 PASSWORD RESET OTP VERIFICATION ERROR:', error);
-    res.status(500).json({ 
-      error: 'Internal server error. Please try again later.'
-    });
-  }
-});
-
-// Complete Password Reset endpoint - UPDATED VERSION
+// Complete Password Reset endpoint - FIXED VERSION
 router.post('/complete-password-reset', async (req, res) => {
   console.log('=== 🔐 COMPLETE PASSWORD RESET START ===');
   console.log('Request body:', { 
@@ -771,10 +706,7 @@ router.post('/complete-password-reset', async (req, res) => {
   }
 });
 
-
-
-
-// Add this to your backend routes
+// Add test endpoints
 router.get('/test', (req, res) => {
   console.log('✅ Test endpoint hit');
   res.json({ 
@@ -792,7 +724,7 @@ router.post('/test-auth', async (req, res) => {
   try {
     console.log('🔄 Testing Supabase auth connection...');
     const { data, error } = await supabase.auth.admin.listUsers();
-    
+
     if (error) {
       console.error('❌ Supabase auth test failed:', error);
       return res.status(500).json({ 
@@ -800,7 +732,7 @@ router.post('/test-auth', async (req, res) => {
         error: error.message 
       });
     }
-    
+
     console.log('✅ Supabase auth test successful');
     res.json({ 
       success: true,
