@@ -748,4 +748,82 @@ router.post('/test-auth', async (req, res) => {
   }
 });
 
+
+
+// Add this to your backend server (e.g., Express.js)
+
+app.post('/api/verify-otp-digit', async (req, res) => {
+  try {
+    const { email, position, digit } = req.body;
+
+    // Validate input
+    if (!email || position === undefined || !digit) {
+      return res.status(400).json({ 
+        error: 'Email, position, and digit are required',
+        valid: false 
+      });
+    }
+
+    // Validate position (0-5 for 6-digit OTP)
+    if (position < 0 || position > 5) {
+      return res.status(400).json({ 
+        error: 'Invalid position. Must be between 0 and 5',
+        valid: false 
+      });
+    }
+
+    // Validate digit (single numeric character)
+    if (!/^\d$/.test(digit)) {
+      return res.status(400).json({ 
+        error: 'Digit must be a single number (0-9)',
+        valid: false 
+      });
+    }
+
+    // Find the stored OTP for this email
+    // This depends on your database structure
+    // Example with a hypothetical OTP storage:
+    const storedOTP = await db.collection('otps').findOne({ 
+      email: email.toLowerCase().trim(),
+      purpose: 'password_reset',
+      expiresAt: { $gt: new Date() } // Check if not expired
+    });
+
+    if (!storedOTP) {
+      return res.status(404).json({ 
+        error: 'No valid OTP found for this email',
+        valid: false 
+      });
+    }
+
+    // Check if the OTP has expired
+    if (new Date() > new Date(storedOTP.expiresAt)) {
+      return res.status(400).json({ 
+        error: 'OTP has expired',
+        valid: false 
+      });
+    }
+
+    // Get the digit at the specified position
+    const otpCode = storedOTP.otp.toString();
+    const correctDigit = otpCode[position];
+
+    // Compare the digits
+    const isValid = correctDigit === digit;
+
+    return res.status(200).json({ 
+      valid: isValid,
+      message: isValid ? 'Digit is correct' : 'Digit is incorrect'
+    });
+
+  } catch (error) {
+    console.error('Error verifying OTP digit:', error);
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      valid: false 
+    });
+  }
+});
+
+
 module.exports = router;
