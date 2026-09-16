@@ -63,6 +63,7 @@ app.use(cors({
   origin: [
     'https://mimaht.com',
     'https://www.mimaht.com',
+    'https://gunplay.netlify.app',
     'http://localhost:3000',
     'http://localhost:5173'
   ],
@@ -106,7 +107,7 @@ app.listen(PORT, () => {
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📧 Resend configured: ${!!process.env.RESEND_API_KEY}`);
   console.log(`📞 Twilio configured: ${!!process.env.TWILIO_ACCOUNT_SID}`);
-  console.log(`🗄️ Supabase URL: ${process.env.SUPABASE_URL}`);
+  console.log(`🗄️Supabase URL: ${process.env.SUPABASE_URL}`);
   console.log(`🔐 Service Role Key: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '❌ Missing'}`);
   console.log(`🔑 Anon Key: ${process.env.SUPABASE_ANON_KEY ? '✅ Set' : '❌ Missing'}`);
   console.log(`🔐 Google OAuth: ${process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET ? '✅ Configured' : '❌ Not configured'}`);
