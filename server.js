@@ -5,6 +5,8 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+global.app = app;
+
 // Validate environment variables
 if (!process.env.SUPABASE_URL) {
   console.error('❌ SUPABASE_URL is required');
